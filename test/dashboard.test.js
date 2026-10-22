@@ -83,6 +83,12 @@ function makeDashboard() {
       curatorEveryDays: 7,
       staleDays: 14,
       archiveDays: 30,
+      reviewTimeoutMs: 900000,
+      maxTranscriptChars: 40000,
+      consolidateEnabled: false,
+      consolidatePreset: 'skill-consolidate',
+      consolidateTimeoutMs: 1800000,
+      consolidateBackupKeep: 2,
       skillctl: '/tmp/skillctl',
     },
     state,
@@ -108,6 +114,11 @@ test('state route returns the snapshot shape', () => {
   assert.equal(body.stats.skills, 1)
   assert.equal(body.stats.reviews, 2)
   assert.equal(body.stats.reviewFailed, 1)
+  assert.equal(body.config.consolidateEnabled, false)
+  assert.equal(body.config.consolidatePreset, 'skill-consolidate')
+  assert.equal(body.config.consolidateBackupKeep, 2)
+  assert.equal(body.runtime.lastConsolidateAt, 0)
+  assert.equal(body.runtime.lastConsolidateSummary, '')
   assert.equal(body.skills[0].name, 'demo')
   assert.equal(body.skills[0].description, 'A demo skill')
   assert.ok(Array.isArray(body.learning))

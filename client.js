@@ -50,6 +50,34 @@ window.__ModuleLoader__.load({
       sectionSkills: 'Skills',
       sectionLearning: 'Recent learning',
       sectionActivity: 'Last 14 days',
+      sectionConfig: 'Configuration',
+      cfgPlugin: 'Plugin',
+      cfgReview: 'Review',
+      cfgCurator: 'Curator',
+      cfgConsolidation: 'Consolidation',
+      cfgPaths: 'Paths',
+      cfgAutoReview: 'Auto-review',
+      cfgThreshold: 'Threshold',
+      cfgReviewPreset: 'Reviewer preset',
+      cfgReviewTimeout: 'Review timeout',
+      cfgTranscriptLimit: 'Transcript limit',
+      cfgFailed: 'Failed reviews',
+      cfgCuratorInterval: 'Curator interval',
+      cfgStaleArchive: 'Stale / archive',
+      cfgConsolidate: 'Consolidation',
+      cfgConsolidatePreset: 'Consolidation preset',
+      cfgConsolidateTimeout: 'Consolidation timeout',
+      cfgBackupKeep: 'Backups kept',
+      cfgLastConsolidation: 'Last consolidation',
+      cfgLibrary: 'Library',
+      cfgStateLog: 'State and log',
+      cfgSkillctl: 'skillctl',
+      cfgChars: '{n} chars',
+      cfgIterations: '{n} iterations',
+      cfgTimeoutMinutes: '{n}m',
+      cfgOn: 'On',
+      cfgOff: 'Off',
+      cfgNever: 'Never',
       sectionAdvanced: 'Technical details',
       filterAll: 'All',
       filterActive: 'Active',
@@ -74,14 +102,7 @@ window.__ModuleLoader__.load({
       skillClose: 'Close',
       skillError: 'Could not read this skill.',
       skillFilesNone: 'none',
-      advThreshold: 'Review threshold',
-      advPreset: 'Reviewer preset',
-      advLibrary: 'Skill library',
-      advState: 'State and log',
-      advFailures: 'Failed reviews',
       advLedger: 'Recent writes',
-      advThresholdValue: '{n} iterations',
-      advCuratorValue: 'every {n} days',
       opCreate: 'new',
       opPatch: 'edit',
       opWriteFile: 'file',
@@ -127,6 +148,34 @@ window.__ModuleLoader__.load({
       sectionSkills: '技能库',
       sectionLearning: '最近学习',
       sectionActivity: '最近 14 天',
+      sectionConfig: '配置',
+      cfgPlugin: '插件',
+      cfgReview: '复盘',
+      cfgCurator: '技能整理',
+      cfgConsolidation: '合并',
+      cfgPaths: '路径',
+      cfgAutoReview: '自动复盘',
+      cfgThreshold: '阈值',
+      cfgReviewPreset: '复审 preset',
+      cfgReviewTimeout: '复审超时',
+      cfgTranscriptLimit: '转录上限',
+      cfgFailed: '失败次数',
+      cfgCuratorInterval: '整理间隔',
+      cfgStaleArchive: '闲置 / 归档',
+      cfgConsolidate: '合并 pass',
+      cfgConsolidatePreset: '合并 preset',
+      cfgConsolidateTimeout: '合并超时',
+      cfgBackupKeep: '保留备份',
+      cfgLastConsolidation: '上次合并',
+      cfgLibrary: '技能库',
+      cfgStateLog: '状态与日志',
+      cfgSkillctl: 'skillctl',
+      cfgChars: '{n} 字符',
+      cfgIterations: '{n} 步',
+      cfgTimeoutMinutes: '{n} 分钟',
+      cfgOn: '开启',
+      cfgOff: '关闭',
+      cfgNever: '从未',
       sectionAdvanced: '技术细节',
       filterAll: '全部',
       filterActive: '活跃',
@@ -151,14 +200,7 @@ window.__ModuleLoader__.load({
       skillClose: '关闭',
       skillError: '读取该技能失败。',
       skillFilesNone: '无',
-      advThreshold: '复盘阈值',
-      advPreset: '复审 preset',
-      advLibrary: '技能库',
-      advState: '状态与日志',
-      advFailures: '失败次数',
       advLedger: '最近写入',
-      advThresholdValue: '{n} 步',
-      advCuratorValue: '每 {n} 天',
       opCreate: '新建',
       opPatch: '修改',
       opWriteFile: '文件',
@@ -265,6 +307,14 @@ window.__ModuleLoader__.load({
 .sc-legend span{display:inline-flex;align-items:center;gap:5px}
 .sc-legend i{width:8px;height:8px;border-radius:2px;display:inline-block}
 .sc-error{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;border:1px solid var(--dsw-alias-state-error-primary);border-radius:12px;color:var(--dsw-alias-state-error-primary);font-size:12px}
+.sc-config-card{padding:16px 18px}
+.sc-config{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px 28px}
+@media(max-width:760px){.sc-config{grid-template-columns:1fr}}
+.sc-config-group-wide{grid-column:1/-1}
+.sc-config-title{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--dsw-alias-label-secondary);margin-bottom:6px}
+.sc-config-list{display:grid;grid-template-columns:150px minmax(0,1fr);gap:5px 14px;margin:0;font-size:12px}
+.sc-config-list dt{color:var(--dsw-alias-label-secondary)}
+.sc-config-list dd{margin:0;overflow-wrap:anywhere}
 .sc-advanced{border-top:1px solid var(--dsw-alias-border-l1);padding-top:14px}
 .sc-advanced summary{cursor:pointer;font-size:12px;color:var(--dsw-alias-label-secondary);list-style:none}
 .sc-advanced summary::-webkit-details-marker{display:none}
@@ -529,21 +579,60 @@ window.__ModuleLoader__.load({
           h('span', null, h('i', { style: { background: COLORS.success } }), t('kpiChanges'))))
     }
 
-    function Advanced(props) {
+    function Configuration(props) {
       const { data, t } = props
       const config = data.config || {}
+      const runtime = data.runtime || {}
       const stats = data.stats || {}
+      const onOff = (value) => (value ? t('cfgOn') : t('cfgOff'))
+      const minutes = (ms) => fill(t('cfgTimeoutMinutes'), { n: Math.max(1, Math.round((Number(ms) || 0) / 60000)) })
+      const group = (title, pairs, wide = false) =>
+        h('div', { className: `sc-config-group${wide ? ' sc-config-group-wide' : ''}`, key: title },
+          h('div', { className: 'sc-config-title' }, title),
+          h('dl', { className: 'sc-config-list' },
+            pairs.flatMap(([label, value, mono], index) => [
+              h('dt', { key: `l-${index}` }, label),
+              h('dd', { key: `v-${index}`, className: mono ? 'sc-mono' : undefined }, value),
+            ])))
+      const lastConsolidation = runtime.lastConsolidateAt
+        ? `${relative(runtime.lastConsolidateAt)} ago${runtime.lastConsolidateSummary ? ` · ${runtime.lastConsolidateSummary}` : ''}`
+        : t('cfgNever')
+      return h('div', { className: 'sc-card sc-config-card' },
+        h('div', { className: 'sc-config' },
+          group(t('cfgReview'), [
+            [t('cfgPlugin'), onOff(config.enabled !== false)],
+            [t('cfgAutoReview'), onOff(config.reviewEnabled !== false)],
+            [t('cfgThreshold'), fill(t('cfgIterations'), { n: config.threshold || 10 })],
+            [t('cfgReviewPreset'), `${config.reviewPreset || 'skill-review'} (${config.reviewProvider || 'spawn'})`, true],
+            [t('cfgReviewTimeout'), minutes(config.reviewTimeoutMs)],
+            [t('cfgTranscriptLimit'), fill(t('cfgChars'), { n: Number(config.maxTranscriptChars) || 40000 })],
+            [t('cfgFailed'), String(stats.reviewFailed || 0)],
+          ]),
+          group(t('cfgCurator'), [
+            [t('cfgCurator'), onOff(config.curatorEnabled !== false)],
+            [t('cfgCuratorInterval'), fill(t('kpiCuratorSub'), { n: config.curatorEveryDays || 7 })],
+            [t('cfgStaleArchive'), `${config.staleDays || 14}d / ${config.archiveDays || 30}d`],
+          ]),
+          group(t('cfgConsolidation'), [
+            [t('cfgConsolidate'), onOff(config.consolidateEnabled === true)],
+            [t('cfgConsolidatePreset'), config.consolidatePreset || 'skill-consolidate', true],
+            [t('cfgConsolidateTimeout'), minutes(config.consolidateTimeoutMs)],
+            [t('cfgBackupKeep'), String(config.consolidateBackupKeep || 2)],
+            [t('cfgLastConsolidation'), lastConsolidation],
+          ]),
+          group(t('cfgPaths'), [
+            [t('cfgLibrary'), config.skillsRoot || '', true],
+            [t('cfgStateLog'), `${config.stateDir || ''} · ${config.logPath || ''}`, true],
+            [t('cfgSkillctl'), config.skillctl || '', true],
+          ], true)))
+    }
+
+    function Advanced(props) {
+      const { data, t } = props
       const ledger = data.ledger || []
       const opLabel = (op) => (op === 'create' ? t('opCreate') : op === 'patch' ? t('opPatch') : op === 'write_file' ? t('opWriteFile') : op === 'archive' ? t('opArchive') : t('opOther'))
       return h('details', { className: 'sc-advanced' },
         h('summary', null, t('sectionAdvanced')),
-        h('dl', { className: 'sc-adv-grid' },
-          h('dt', null, t('advThreshold')), h('dd', null, fill(t('advThresholdValue'), { n: config.threshold || 10 })),
-          h('dt', null, t('advPreset')), h('dd', { className: 'sc-mono' }, `${config.reviewPreset || 'skill-review'} (${config.reviewProvider || 'spawn'})`),
-          h('dt', null, t('kpiCurator')), h('dd', null, fill(t('advCuratorValue'), { n: config.curatorEveryDays || 7 })),
-          h('dt', null, t('advFailures')), h('dd', null, String(stats.reviewFailed || 0)),
-          h('dt', null, t('advLibrary')), h('dd', { className: 'sc-mono' }, config.skillsRoot || ''),
-          h('dt', null, t('advState')), h('dd', { className: 'sc-mono' }, config.logPath || '')),
         h('div', { style: { marginTop: 14 } },
           h('div', { className: 'sc-section-hint', style: { marginBottom: 6 } }, t('advLedger')),
           ledger.length === 0
@@ -871,6 +960,7 @@ window.__ModuleLoader__.load({
       const activitySection = h(Section, { title: t('sectionActivity') },
         h('div', { className: 'sc-card' }, h(Cadence, { activity: (data && data.activity) || [], t })))
 
+      const configSection = data ? h(Section, { title: t('sectionConfig') }, h(Configuration, { data, t })) : null
       const advanced = data ? h(Advanced, { data, t }) : null
 
       return h(React.Fragment, null,
@@ -882,7 +972,7 @@ window.__ModuleLoader__.load({
               h('span', null, `${t('error')} ${error}`),
               h('button', { className: 'sc-btn', onClick: reload }, t('retry'))) : null,
             loading && !data ? h('div', { className: 'sc-skeleton' }, t('loading')) : null,
-            data ? h(React.Fragment, null, hero, kpis, skillsSection, learningSection, activitySection, advanced) : null)),
+            data ? h(React.Fragment, null, hero, kpis, skillsSection, learningSection, activitySection, configSection, advanced) : null)),
         selected ? h(SkillModal, {
           skill: skills.find((skill) => skill.name === selected) || { name: selected, description: '' },
           detail,

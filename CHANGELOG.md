@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.2 — 2026-10-22
+
+- Dashboard: a visible Configuration section with the live review/curator/
+  consolidation settings and paths; consolidation state (`lastConsolidateAt`,
+  summary) is exposed in the state payload.
+- The Technical details disclosure now only carries the recent ledger rows.
+
 ## 0.3.1 — 2026-10-22
 
 - Manual consolidation trigger: `skillctl curator --request-consolidation` writes a
