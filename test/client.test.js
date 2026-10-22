@@ -62,6 +62,7 @@ test('client half registers the sidebar icon and the main panel', () => {
     getSnapshot: () => ({ revision: 1 }),
   }
   const ctx = {
+    get: (key) => (key === 'uiWorkspace' ? { openSession: () => {} } : undefined),
     effect: (fn) => {
       fn()
       return () => {}
@@ -77,11 +78,14 @@ test('client half registers the sidebar icon and the main panel', () => {
   }
   plugin.apply(ctx)
 
-  assert.equal(registrations.length, 2)
+  assert.equal(registrations.length, 3)
   const sidebar = registrations.find((entry) => entry.definition.name === 'sidebar.panellist')
   const main = registrations.find((entry) => entry.definition.name === 'main')
+  const catalog = registrations.find((entry) => entry.definition.name === 'conversation.session.header.actions')
   assert.equal(sidebar.definition.id, 'skill-curator')
   assert.equal(main.definition.key, 'skill-curator')
+  assert.equal(catalog.definition.id, 'subagent-catalog')
   assert.equal(typeof sidebar.component, 'function')
   assert.equal(typeof main.component, 'function')
+  assert.equal(typeof catalog.component, 'function')
 })

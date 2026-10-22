@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Hide the curator's internal review/consolidation/self-test children from the
+  session subagent catalog: the header action filters entries whose label matches the
+  internal labels (including legacy `skill review` rows) and shows only user
+  subagents. Internal runs remain visible in the Skill Curator panel's review history.
+
 ## 0.3.2 — 2026-10-22
 
 - Prevent the background reviewer from duplicating user-owned skills: the review

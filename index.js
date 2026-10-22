@@ -522,7 +522,7 @@ export function apply(ctx, config = {}) {
     })
     const activation = await ctx.subagents.startActivation({
       provider: cfg.reviewProvider,
-      label: 'skill review',
+      label: 'Skill Curator · review',
       request: planning.request,
       signal: controller.signal,
       delivery: 'caller',
@@ -591,7 +591,7 @@ export function apply(ctx, config = {}) {
       })
       const activation = await ctx.subagents.startActivation({
         provider: cfg.reviewProvider,
-        label: 'skill curator self-test',
+        label: 'Skill Curator · self-test',
         request: planning.request,
         signal: controller.signal,
         delivery: 'caller',
@@ -787,7 +787,7 @@ export function apply(ctx, config = {}) {
     try {
       const activation = await ctx.subagents.startActivation({
         provider: cfg.reviewProvider,
-        label: 'skill consolidation',
+        label: 'Skill Curator · consolidation',
         request: planning.request,
         signal: controller.signal,
         delivery: 'caller',

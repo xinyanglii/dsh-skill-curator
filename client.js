@@ -21,6 +21,10 @@ window.__ModuleLoader__.load({
       reviewing: 'reviewing now',
       curatorRunning: 'tidying now',
       refresh: 'Refresh',
+      subagentCountOne: '{n} subagent',
+      subagentCountMany: '{n} subagents',
+      subagentRunning: '{n} running',
+      subagentOpen: 'Subagents',
       loading: 'Loading…',
       error: 'Could not read the curator state.',
       retry: 'Retry',
@@ -95,6 +99,10 @@ window.__ModuleLoader__.load({
       reviewing: '正在复盘',
       curatorRunning: '正在整理',
       refresh: '刷新',
+      subagentCountOne: '{n} 个子代理',
+      subagentCountMany: '{n} 个子代理',
+      subagentRunning: '{n} 个运行中',
+      subagentOpen: '子代理',
       loading: '加载中…',
       error: '读取策展状态失败。',
       retry: '重试',
@@ -276,6 +284,16 @@ window.__ModuleLoader__.load({
 .sc-inline{display:inline-flex;align-items:center;gap:6px}
 .sc-inline-sep{color:var(--dsw-alias-label-secondary)}
 .sc-config-actions{display:flex;align-items:center;gap:12px;margin-top:16px;padding-top:14px;border-top:1px solid var(--dsw-alias-border-l1)}
+.sc-subagents{position:relative;display:inline-flex;align-items:center}
+.sc-subagents-trigger{display:inline-flex;align-items:center;gap:6px;padding:3px 5px;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-tertiary);font:inherit;font-size:12px;line-height:18px;cursor:pointer}
+.sc-subagents-trigger:hover,.sc-subagents-trigger[aria-expanded=true]{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
+.sc-subagents-running{font-size:11px;color:var(--dsw-alias-state-business-primary)}
+.sc-subagents-menu{position:fixed;z-index:100;box-sizing:border-box;min-width:240px;max-width:340px;max-height:min(420px,60vh);overflow:auto;padding:4px;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-lg);background:var(--dsw-specific-menu);box-shadow:var(--dsw-elevation-prominent)}
+.sc-subagents-row{display:flex;align-items:center;gap:8px;width:100%;padding:7px 9px;border:0;border-radius:var(--dsw-radius-md);background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;line-height:17px;text-align:left;cursor:pointer}
+.sc-subagents-row:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.sc-subagents-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sc-subagents-dot{flex:none;width:7px;height:7px;border-radius:50%;background:var(--dsw-alias-label-tertiary)}
+.sc-subagents-dot-running{background:var(--dsw-alias-state-business-primary)}
 .sc-status-ok{font-size:12px;color:var(--dsw-alias-state-success-primary)}
 .sc-status-error{font-size:12px;color:var(--dsw-alias-state-error-primary)}
 .sc-mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
@@ -426,6 +444,78 @@ window.__ModuleLoader__.load({
       success: 'var(--dsw-alias-state-success-primary)',
       warn: 'var(--dsw-alias-state-warn-primary)',
       idle: 'var(--dsw-alias-state-idle-primary)',
+    }
+
+    const INTERNAL_SUBAGENT_PREFIX = 'Skill Curator · '
+    const INTERNAL_SUBAGENT_LABELS = new Set([
+      'skill review',
+      'skill consolidation',
+      'skill curator self-test',
+      'Skill Curator · review',
+      'Skill Curator · consolidation',
+      'Skill Curator · self-test',
+    ])
+
+    function isInternalSubagent(entry) {
+      const label = typeof entry?.label === 'string' ? entry.label : ''
+      return label.startsWith(INTERNAL_SUBAGENT_PREFIX) || INTERNAL_SUBAGENT_LABELS.has(label)
+    }
+
+    function SubagentCatalogFilter(props) {
+      const { sessionId, useSessions, useSessionStatus, openSession, t } = props
+      const catalog = useSessions((state) => state.projectionsBySession[sessionId]?.values.subagentCatalog)
+      const statuses = useSessionStatus((value) => value)
+      const [open, setOpen] = useState(false)
+      const [position, setPosition] = useState(undefined)
+      const rootRef = useRef(null)
+      const triggerRef = useRef(null)
+      const entries = (Array.isArray(catalog) ? catalog : []).filter((entry) => !isInternalSubagent(entry))
+
+      useEffect(() => {
+        if (!open) return
+        const close = (event) => {
+          if (rootRef.current && !rootRef.current.contains(event.target)) setOpen(false)
+        }
+        document.addEventListener('pointerdown', close)
+        return () => document.removeEventListener('pointerdown', close)
+      }, [open])
+
+      if (entries.length === 0) return null
+      const running = entries.filter((entry) => (statuses.get(entry.id)?.running ?? false) === true).length
+      const openMenu = () => {
+        const trigger = triggerRef.current
+        if (trigger) {
+          const rect = trigger.getBoundingClientRect()
+          setPosition({ top: rect.bottom + 6, right: Math.max(8, window.innerWidth - rect.right) })
+        }
+        setOpen((current) => !current)
+      }
+
+      return h('div', { className: 'sc-subagents', ref: rootRef },
+        h('button', {
+          type: 'button',
+          ref: triggerRef,
+          className: 'sc-subagents-trigger',
+          'aria-expanded': open,
+          'aria-label': t('subagentOpen'),
+          onClick: openMenu,
+        },
+        h('span', null, fill(t(entries.length === 1 ? 'subagentCountOne' : 'subagentCountMany'), { n: entries.length })),
+        running > 0 ? h('span', { className: 'sc-subagents-running' }, fill(t('subagentRunning'), { n: running })) : null),
+        open && position
+          ? h('div', { className: 'sc-subagents-menu', style: { top: position.top, right: position.right } },
+              entries.map((entry) => h('button', {
+                type: 'button',
+                key: entry.id,
+                className: 'sc-subagents-row',
+                onClick: () => {
+                  setOpen(false)
+                  openSession({ parentSessionId: sessionId, childSessionId: entry.id, mode: entry.mode })
+                },
+              },
+              h('span', { className: `sc-subagents-dot${(statuses.get(entry.id)?.running ?? false) ? ' sc-subagents-dot-running' : ''}` }),
+              h('span', { className: 'sc-subagents-label' }, entry.label || entry.id))))
+          : null)
     }
 
     function PanelIcon(props) {
@@ -1043,6 +1133,28 @@ window.__ModuleLoader__.load({
           name: 'main',
           key: 'skill-curator',
         }, LocalizedCurator))
+        let uiWorkspace = null
+        try {
+          uiWorkspace = ctx.get ? ctx.get('uiWorkspace') : null
+        } catch {
+          uiWorkspace = null
+        }
+        const LocalizedSubagentCatalog = localize(SubagentCatalogFilter)
+        ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
+          name: 'conversation.session.header.actions',
+          id: 'subagent-catalog',
+          order: 10,
+          priority: -1,
+          inject: () => ({
+            openSession: (address) => {
+              try {
+                uiWorkspace?.openSession?.(address)
+              } catch {
+                /* navigation is unavailable */
+              }
+            },
+          }),
+        }, LocalizedSubagentCatalog))
       },
     }
   },
