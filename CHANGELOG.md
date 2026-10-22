@@ -6,7 +6,10 @@
   subagents button is unchanged except that internal rows are hidden and its count is
   corrected to user subagents only. A new `N curator runs` header action lists the
   internal review/consolidation/self-test runs and opens them like the subagents
-  dropdown. Legacy `skill review` labels are filtered too.
+  dropdown.
+- Internal runs are identified by child session id recorded by the Host, not by label:
+  a normal code-review subagent called "skill review" stays in the subagents list and
+  is never treated as curator work.
 
 ## 0.3.2 — 2026-10-22
 

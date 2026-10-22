@@ -22,6 +22,14 @@ const SKILL_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/
 const STATE_ROUTE = '/skill-curator/api/state'
 const SKILL_ROUTE = '/skill-curator/api/skill'
 const CONFIG_ROUTE = '/skill-curator/api/config'
+const INTERNAL_ROUTE = '/skill-curator/api/internal'
+const INTERNAL_CHILD_EVENTS = new Set([
+  'review.activated',
+  'review.finished',
+  'consolidate.activated',
+  'selftest.start',
+  'selftest.finished',
+])
 const MAX_BODY_BYTES = 64 * 1024
 
 // Editable config surface. Paths, python and skillctl stay read-only: they are
@@ -468,6 +476,15 @@ export function registerDashboard(ctx, options) {
     }
   }
 
+  function buildInternalChildIds(live, logRows) {
+    const ids = new Set(Array.isArray(live.internalChildIds) ? live.internalChildIds : [])
+    for (const row of logRows) {
+      if (!row || typeof row.child !== 'string' || !row.child) continue
+      if (INTERNAL_CHILD_EVENTS.has(row.event)) ids.add(row.child)
+    }
+    return [...ids].slice(-500)
+  }
+
   function buildStatePayload() {
     const live = snapshot ? snapshot() : {}
     const skills = buildSkillRows()
@@ -475,8 +492,10 @@ export function registerDashboard(ctx, options) {
     const logRows = readJsonLines(logPath, lineCache)
     const ledgerRows = readJsonLines(ledgerPath, lineCache)
     const events = readEvents(logRows, 60)
+    const internalChildIds = buildInternalChildIds(live, logRows)
     return {
       generatedAt: Date.now(),
+      internalChildIds,
       config: {
         enabled: cfg.enabled !== false,
         threshold: cfg.nudgeAfterToolIters,
@@ -600,6 +619,13 @@ export function registerDashboard(ctx, options) {
       } catch (error) {
         sendJson(res, 409, { error: String(error && error.message ? error.message : error) })
       }
+    }],
+    [INTERNAL_ROUTE, (req, res) => {
+      if (!isLoopbackRequest(req)) return sendJson(res, 403, { error: 'loopback only' })
+      if (req.method !== 'GET') return sendJson(res, 405, { error: 'GET only' })
+      const live = snapshot ? snapshot() : {}
+      const logRows = readJsonLines(logPath, lineCache)
+      sendJson(res, 200, { ids: buildInternalChildIds(live, logRows) })
     }],
     [SKILL_ROUTE, (req, res) => {
       if (!isLoopbackRequest(req)) return sendJson(res, 403, { error: 'loopback only' })

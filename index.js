@@ -213,6 +213,7 @@ export function apply(ctx, config = {}) {
   state.lastReviewAt = Number(state.lastReviewAt) || 0
   state.lastConsolidateAt = Number(state.lastConsolidateAt) || 0
   state.lastConsolidateSummary = String(state.lastConsolidateSummary || '')
+  if (!Array.isArray(state.internalChildIds)) state.internalChildIds = []
 
   // session id -> { iterations, lastTurnAt, lastReviewAt, reviews }. `iterations`
   // counts model steps (Hermes's `_iters_since_skill` unit), not individual tool calls.
@@ -236,6 +237,15 @@ export function apply(ctx, config = {}) {
   const pendingSkillUses = new Map()
   const reviewQueue = []
   const reviewChildren = new Set()
+  function rememberInternalChild(childId) {
+    const id = idOf(childId)
+    if (!id) return
+    if (!reviewChildren.has(id)) reviewChildren.add(id)
+    if (!state.internalChildIds.includes(id)) {
+      state.internalChildIds.push(id)
+      if (state.internalChildIds.length > 500) state.internalChildIds = state.internalChildIds.slice(-500)
+    }
+  }
 
   let reviewing = false
   let curatorRunning = false
@@ -284,6 +294,7 @@ export function apply(ctx, config = {}) {
         lastReviewAt: Number(state.lastReviewAt) || 0,
         lastConsolidateAt: Number(state.lastConsolidateAt) || 0,
         lastConsolidateSummary: String(state.lastConsolidateSummary || ''),
+        internalChildIds: state.internalChildIds.slice(-500),
         counterSemantics: state.counterSemantics || 'iterations',
         sessions: Object.fromEntries(counters),
       })
@@ -528,7 +539,7 @@ export function apply(ctx, config = {}) {
       delivery: 'caller',
     })
     activeActivation = activation
-    reviewChildren.add(idOf(activation.childId))
+    rememberInternalChild(activation.childId)
     log({ event: 'review.activated', session: sessionId, child: idOf(activation.childId) })
 
     const timer = ctx.timeout(() => {
@@ -596,6 +607,7 @@ export function apply(ctx, config = {}) {
         signal: controller.signal,
         delivery: 'caller',
       })
+      rememberInternalChild(activation.childId)
       const timer = ctx.timeout(() => {
         try {
           controller.abort()
@@ -793,7 +805,7 @@ export function apply(ctx, config = {}) {
         delivery: 'caller',
       })
       activeActivation = activation
-      reviewChildren.add(idOf(activation.childId))
+      rememberInternalChild(activation.childId)
       log({ event: 'consolidate.activated', child: idOf(activation.childId) })
       const timer = ctx.timeout(() => {
         try {
@@ -1072,6 +1084,7 @@ export function apply(ctx, config = {}) {
         snapshot: () => ({
           reviewing,
           curatorRunning,
+          internalChildIds: [...new Set([...state.internalChildIds, ...reviewChildren])],
           lastCuratorAt: Number(state.lastCuratorAt) || 0,
           selfTested: Number(state.selfTested) || 0,
           sessions: [...counters.entries()].map(([sessionId, record]) => ({

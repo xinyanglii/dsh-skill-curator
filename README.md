@@ -250,11 +250,16 @@ reviewer may read them, but it never writes to them:
 
 ### Internal runs get their own header action
 
-The `skill-review` and `skill-consolidate` children are internal work. The shipped
-subagents button keeps its UI and behavior but filters those rows (including legacy
-`skill review` labels) and shows only user subagents. A separate `N curator runs`
-header action lists the internal runs and opens them with the same dropdown interaction;
-the rows are also in the Skill Curator panel's review history.
+The reviewer and consolidation children are internal work. The Host records each
+child session id when it starts one; the browser half uses that id set (not labels) to
+split the catalogs:
+
+- the shipped subagents button keeps its UI and behavior but hides those rows and shows
+  only user subagents, so a normal code-review subagent called "skill review" is
+  unaffected;
+- a separate `N curator runs` header action lists the internal runs and opens them with
+  the same dropdown interaction. The rows are also in the Skill Curator panel's review
+  history.
 
 ## Dashboard
 

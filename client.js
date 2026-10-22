@@ -459,20 +459,10 @@ window.__ModuleLoader__.load({
       idle: 'var(--dsw-alias-state-idle-primary)',
     }
 
-    const INTERNAL_SUBAGENT_PREFIX = 'Skill Curator · '
-    const INTERNAL_SUBAGENT_LABELS = new Set([
-      'skill review',
-      'skill consolidation',
-      'skill curator self-test',
-      'Skill Curator · review',
-      'Skill Curator · consolidation',
-      'Skill Curator · self-test',
-    ])
-
-    function isInternalSubagent(entry) {
-      const label = typeof entry?.label === 'string' ? entry.label : ''
-      return label.startsWith(INTERNAL_SUBAGENT_PREFIX) || INTERNAL_SUBAGENT_LABELS.has(label)
-    }
+    // Catalog ownership comes from child session ids recorded by the host, never
+    // from labels: a user subagent may legitimately be called "skill review".
+    let headerCatalogEntries = []
+    let headerInternalIds = new Set()
 
     function SubagentCatalogFilter(props) {
       const { sessionId, useSessions, useSessionStatus, openSession, t } = props
@@ -480,11 +470,34 @@ window.__ModuleLoader__.load({
       const statuses = useSessionStatus((value) => value)
       const [open, setOpen] = useState(false)
       const [position, setPosition] = useState(undefined)
+      const [internalIds, setInternalIds] = useState(() => new Set())
       const rootRef = useRef(null)
       const triggerRef = useRef(null)
       const allEntries = Array.isArray(catalog) ? catalog : []
-      const entries = allEntries.filter(isInternalSubagent)
-      const userEntries = allEntries.filter((entry) => !isInternalSubagent(entry))
+      const entries = allEntries.filter((entry) => internalIds.has(entry.id))
+      const userEntries = allEntries.filter((entry) => !internalIds.has(entry.id))
+      headerCatalogEntries = allEntries
+      headerInternalIds = internalIds
+
+      useEffect(() => {
+        let alive = true
+        const load = async () => {
+          try {
+            const response = await fetch(`${API}/internal`, { headers: { accept: 'application/json' } })
+            if (!response.ok) return
+            const payload = await response.json()
+            if (alive && Array.isArray(payload.ids)) setInternalIds(new Set(payload.ids))
+          } catch {
+            /* endpoint unavailable: do not guess by label */
+          }
+        }
+        load()
+        const timer = setInterval(load, 15000)
+        return () => {
+          alive = false
+          clearInterval(timer)
+        }
+      }, [])
 
       useEffect(() => {
         const root = document.documentElement
@@ -1194,12 +1207,6 @@ window.__ModuleLoader__.load({
         // Keep the shipped subagent catalog intact; hide its internal rows (and the
         // trigger when only internal children exist) from the DOM. A new header
         // action above lists those internal runs.
-        const internalLabel = (text) => {
-          if (typeof text !== 'string') return false
-          const value = text.trim().toLowerCase()
-          if (value.startsWith(INTERNAL_SUBAGENT_PREFIX.toLowerCase())) return true
-          return [...INTERNAL_SUBAGENT_LABELS].some((label) => value.startsWith(label.toLowerCase()))
-        }
         const syncOriginalCatalog = () => {
           const root = document.documentElement
           const state = root.dataset.scSubagentState || 'none'
@@ -1227,9 +1234,29 @@ window.__ModuleLoader__.load({
               }
             }
           }
-          for (const row of document.querySelectorAll('[role="treeitem"], [role="row"]')) {
-            const label = (row.textContent || '').trim()
-            if (internalLabel(label)) row.style.display = 'none'
+          if (typeof document.querySelectorAll === 'function' && headerCatalogEntries.length > 0) {
+            let tree = null
+            let bestScore = 0
+            for (const candidate of document.querySelectorAll('[role="tree"]')) {
+              const rows = [...candidate.querySelectorAll('[role="treeitem"], [role="row"]')]
+              let score = 0
+              rows.forEach((row, index) => {
+                const entry = headerCatalogEntries[index]
+                const text = (row.textContent || '').trim()
+                if (entry && text.startsWith(entry.label || '')) score++
+              })
+              if (score > bestScore) {
+                bestScore = score
+                tree = candidate
+              }
+            }
+            if (tree) {
+              const rows = [...tree.querySelectorAll('[role="treeitem"], [role="row"]')]
+              rows.forEach((row, index) => {
+                const entry = headerCatalogEntries[index]
+                row.style.display = entry && headerInternalIds.has(entry.id) ? 'none' : ''
+              })
+            }
           }
         }
         let scheduled = false

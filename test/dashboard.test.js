@@ -157,7 +157,7 @@ function makeDashboard() {
 test('registers both GET routes and reports them', () => {
   const { dashboard, web } = makeDashboard()
   assert.equal(dashboard.registered, true)
-  assert.deepEqual(dashboard.routes.sort(), ['/skill-curator/api/config', '/skill-curator/api/skill', '/skill-curator/api/state'])
+  assert.deepEqual(dashboard.routes.sort(), ['/skill-curator/api/config', '/skill-curator/api/internal', '/skill-curator/api/skill', '/skill-curator/api/state'])
   assert.ok(web.handlers.has('/skill-curator/api/state'))
   assert.ok(web.handlers.has('/skill-curator/api/skill'))
 })
