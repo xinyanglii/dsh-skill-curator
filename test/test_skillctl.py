@@ -140,6 +140,53 @@ class SkillctlTest(unittest.TestCase):
         self.assertEqual(restored.returncode, 0, restored.stderr)
         self.assertTrue((self.root / "demo" / "SKILL.md").exists())
 
+    def test_create_rejects_an_oversized_body(self):
+        result = self.run_cli(
+            "manage",
+            "create",
+            "huge",
+            "--description=Huge skill",
+            "--created-by=agent",
+            "--actor=agent",
+            "--file=-",
+            stdin="x" * 100_001,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("(limit: 100,000)", result.stderr)
+        self.assertFalse((self.root / "huge").exists())
+
+    def test_patch_rejects_a_result_above_the_limit(self):
+        skill = self.create_demo()
+        before = skill.read_text(encoding="utf-8")
+        current = hashlib.sha256(before.encode()).hexdigest()
+        result = self.run_cli(
+            "manage",
+            "patch",
+            "demo",
+            "--old=Use it.",
+            "--new=" + "y" * 100_001,
+            "--expect-sha=" + current,
+            "--actor=agent",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("(limit: 100,000)", result.stderr)
+        self.assertEqual(skill.read_text(encoding="utf-8"), before)
+
+    def test_write_file_rejects_a_file_above_one_mib(self):
+        self.create_demo()
+        result = self.run_cli(
+            "manage",
+            "write_file",
+            "demo",
+            "--path=references/big.md",
+            "--file=-",
+            "--actor=agent",
+            stdin="z" * (1_048_577),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("limit", result.stderr)
+        self.assertFalse((self.root / "demo" / "references" / "big.md").exists())
+
     def test_validate_accepts_a_generated_skill(self):
         self.create_demo()
         result = self.run_cli("validate", "demo")

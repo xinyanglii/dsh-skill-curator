@@ -148,6 +148,24 @@ Override any value from the profile's `cordis.patch.yml` by row id (`skill-curat
 Available `skill_manage` actions: `create`, `patch`, `write_file`, `archive`.
 There is deliberately no delete action; `skillctl restore` brings an archived skill back.
 
+## Write limits
+
+`skillctl` enforces these as **hard errors returned to the reviewer**; skill content is
+never silently truncated. A rejected write leaves the library unchanged and the reviewer
+gets the measured size plus the limit, so it can split the skill or move detail into
+`references/` and retry.
+
+| Item | Limit | Behavior |
+|---|---|---|
+| `SKILL.md` (whole file) | 100,000 characters | hard error |
+| One supporting file | 1 MiB | hard error |
+| `description` | 500 characters | hard error (DSH truncates above 500); 120 is the recommended routing length |
+| `SKILL.md` advisory | 24,000 bytes | warning only: "should split into references/" |
+
+These are write-path limits. The only truncation in the plugin is the review **input**
+transcript (`maxTranscriptChars`, default 40,000 characters), which is a prompt budget, not
+a skill-content limit. Skill injection/read behavior belongs to DSH itself.
+
 ## Dashboard
 
 - Sidebar entry **Skill Curator** → full-width main panel.

@@ -44,7 +44,9 @@ KNOWN_KEYS = {"name", "description", "whenToUse", "metadata",
               "disable-model-invocation", "user-invocable"}
 DSH_DESC_CAP = 500
 RECOMMENDED_DESC = 120
-MAX_BODY = 24000
+MAX_BODY = 24000              # advisory: warn, never truncate
+MAX_SKILL_CONTENT_CHARS = 100_000   # hard limit (Hermes parity)
+MAX_SUPPORT_FILE_BYTES = 1_048_576  # hard limit per supporting file (Hermes parity)
 SUPPORT_DIRS = ("references", "scripts", "templates", "assets")
 FENCE = chr(96) * 3
 
@@ -176,6 +178,14 @@ def parse_frontmatter(block):
     return data, errors
 
 
+def content_size_error(text, label="SKILL.md"):
+    size = len(text)
+    if size > MAX_SKILL_CONTENT_CHARS:
+        return ("%s is %s characters (limit: %s); split the skill or move detail into references/"
+                % (label, format(size, ","), format(MAX_SKILL_CONTENT_CHARS, ",")))
+    return None
+
+
 def check_skill(path):
     errors, warnings = [], []
     name = path.parent.name
@@ -208,6 +218,9 @@ def check_skill(path):
             warnings.append("key %r is ignored by DSH" % key)
     if "\t" in block:
         errors.append("frontmatter contains a tab character")
+    if len(text) > MAX_SKILL_CONTENT_CHARS:
+        errors.append("SKILL.md is %s characters; hard limit is %s"
+                      % (format(len(text), ","), format(MAX_SKILL_CONTENT_CHARS, ",")))
     size = len(text.encode("utf-8"))
     if size > MAX_BODY:
         warnings.append("SKILL.md is %d bytes; keep under %d" % (size, MAX_BODY))
@@ -326,6 +339,11 @@ def cmd_new(args, body=None):
             "## Pitfalls", "", "- Known limit.", "",
             "## Verification", "", "Run one check that proves it worked.", "",
         ])
+
+    size_error = content_size_error(text)
+    if size_error:
+        print("error: %s; nothing written" % size_error, file=sys.stderr)
+        return 2
 
     def write():
         path.parent.mkdir(parents=True)
@@ -497,6 +515,10 @@ def apply_edit(name, new_text, actor, op, expect_sha=None):
     if expect_sha and expect_sha != current_sha:
         print("error: read-before-write failed: expected %s, file is %s" % (expect_sha, current_sha), file=sys.stderr)
         return 2
+    size_error = content_size_error(new_text)
+    if size_error:
+        print("error: %s; original unchanged" % size_error, file=sys.stderr)
+        return 2
     original = path.read_bytes()
     before = snapshot_tree(ROOT / name)
     path.write_text(new_text, encoding="utf-8")
@@ -557,6 +579,11 @@ def cmd_manage(args):
             print("error: no skill %r" % args.name, file=sys.stderr)
             return 2
         content = read_input(args.file)
+        content_bytes = len(content.encode("utf-8"))
+        if content_bytes > MAX_SUPPORT_FILE_BYTES:
+            print("error: file content is %s bytes (limit: %s); split it or reference it instead"
+                  % (format(content_bytes, ","), format(MAX_SUPPORT_FILE_BYTES, ",")), file=sys.stderr)
+            return 2
         def mutate():
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")

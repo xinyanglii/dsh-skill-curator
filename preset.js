@@ -26,7 +26,6 @@ const DEFAULTS = {
   skillctl: path.join(PACKAGE_ROOT, 'scripts', 'skillctl'),
   python: process.env.DSH_CURATOR_PYTHON || 'python3',
   timeoutMs: 60000,
-  maxContentChars: 40000,
 }
 
 function textBlock(text) {

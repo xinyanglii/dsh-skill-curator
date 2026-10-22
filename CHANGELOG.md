@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.1 — 2026-10-22
+
+- Hard write limits, aligned with Hermes and returned as tool errors (never truncation):
+  `SKILL.md` 100,000 characters, each supporting file 1 MiB. The 24,000-byte body warning
+  remains advisory.
+- Removed the unused `maxContentChars` preset config key.
+- Added tests for oversized create/patch/write_file rejection.
+
 ## 0.2.0 — 2026-10-22
 
 First public release.
