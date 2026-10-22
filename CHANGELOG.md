@@ -13,7 +13,9 @@
 - The curator-runs menu is rendered through a document-body portal so header stacking
   and overlays cannot swallow row clicks; clicking a run opens that child session.
 - Curator run rows show the label plus created time, mode and a short child-session id
-  (full id on hover), so repeated review labels are distinguishable.
+  (full id on hover), so repeated review labels are distinguishable. They are sorted
+  newest first; legacy labels (`skill review`, `skill consolidation`, self-test) are
+  normalized to `Skill Curator · …` in this menu without renaming the sessions.
 
 ## 0.3.2 — 2026-10-22
 

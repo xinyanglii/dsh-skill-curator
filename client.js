@@ -475,6 +475,19 @@ window.__ModuleLoader__.load({
     let headerCatalogEntries = []
     let headerInternalIds = new Set()
 
+    // Older curator children were labelled without the prefix. Normalize display
+    // names in this menu only; the underlying session labels stay untouched.
+    const CURATOR_RUN_LABEL_ALIASES = {
+      'skill review': 'Skill Curator · review',
+      'skill consolidation': 'Skill Curator · consolidation',
+      'skill curator self-test': 'Skill Curator · self-test',
+    }
+
+    function curatorRunLabel(entry) {
+      const label = typeof entry?.label === 'string' ? entry.label : ''
+      return CURATOR_RUN_LABEL_ALIASES[label] || label || String(entry?.id || '')
+    }
+
     function SubagentCatalogFilter(props) {
       const { sessionId, useSessions, useSessionStatus, openSession, t } = props
       const catalog = useSessions((state) => state.projectionsBySession[sessionId]?.values.subagentCatalog)
@@ -487,7 +500,9 @@ window.__ModuleLoader__.load({
       const menuRef = useRef(null)
       const triggerRef = useRef(null)
       const allEntries = Array.isArray(catalog) ? catalog : []
-      const entries = allEntries.filter((entry) => internalIds.has(entry.id))
+      const entries = allEntries
+        .filter((entry) => internalIds.has(entry.id))
+        .sort((left, right) => (Number(right.createdAt) || 0) - (Number(left.createdAt) || 0))
       const userEntries = allEntries.filter((entry) => !internalIds.has(entry.id))
       headerCatalogEntries = allEntries
       headerInternalIds = internalIds
@@ -567,7 +582,7 @@ window.__ModuleLoader__.load({
       },
       h('span', { className: `sc-subagents-dot${(statuses.get(entry.id)?.running ?? false) ? ' sc-subagents-dot-running' : ''}` }),
       h('span', { className: 'sc-subagents-body' },
-        h('span', { className: 'sc-subagents-label' }, entry.label || entry.id),
+        h('span', { className: 'sc-subagents-label' }, curatorRunLabel(entry)),
         h('span', { className: 'sc-subagents-meta' },
           [relative(entry.createdAt), t('curatorRunAgo'), entry.mode, `#${String(entry.id).slice(0, 8)}`]
             .filter(Boolean).join(' · '))))))
