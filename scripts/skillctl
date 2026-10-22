@@ -664,7 +664,24 @@ def archive_dir(name, data):
     return True
 
 
+CONSOLIDATE_REQUEST = ROOT / ".dsh-curator" / "consolidate.request"
+
+
+def request_consolidation():
+    """Ask the running curator plugin to run one consolidation pass at the next turn end."""
+    CONSOLIDATE_REQUEST.parent.mkdir(parents=True, exist_ok=True)
+    CONSOLIDATE_REQUEST.write_text(
+        json.dumps({"requested_at": iso(now())}, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    return CONSOLIDATE_REQUEST
+
+
 def cmd_curator(args):
+    if getattr(args, "request_consolidation", False):
+        path = request_consolidation()
+        print("requested consolidation pass: %s" % path)
+        return 0
     data = load_usage()
     stale_days, archive_days = args.stale_days, args.archive_days
     changes = 0
@@ -1058,6 +1075,7 @@ def main(argv):
     p.add_argument("--stale-days", type=float, default=14)
     p.add_argument("--archive-days", type=float, default=30)
     p.add_argument("--include-manual", action="store_true")
+    p.add_argument("--request-consolidation", action="store_true")
     p.set_defaults(func=cmd_curator)
 
     p = sub.add_parser("consolidate", help="print the curator consolidation prompt")

@@ -196,6 +196,9 @@ curator-managed library and builds umbrellas.
   `run.json` and `REPORT.md` under `<stateDir>/curator-runs/<timestamp>/` with the
   consolidated/pruned classification, added skills, state transitions and the child's
   final summary. Archives remain recoverable with `skillctl restore <name>`.
+- Manual trigger (Hermes `curator run --consolidate` equivalent):
+  `skillctl curator --request-consolidation` writes a request marker; the plugin consumes
+  it at the next completed turn and runs one pass even when `consolidateEnabled` is false.
 - Unlike Hermes, DSH has no cron-job skill references, so there is no cron rewrite step.
 
 ## Dashboard

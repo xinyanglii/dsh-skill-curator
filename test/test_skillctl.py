@@ -263,6 +263,13 @@ class SkillctlTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("pinned", result.stderr)
 
+    def test_request_consolidation_writes_a_marker(self):
+        result = self.run_cli("curator", "--request-consolidation")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        marker = self.root / ".dsh-curator" / "consolidate.request"
+        self.assertTrue(marker.exists())
+        self.assertIn("requested_at", marker.read_text())
+
     def test_list_json_reports_library_metadata(self):
         self.make_skill("agent-skill")
         result = self.run_cli("list", "--json")

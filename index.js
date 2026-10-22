@@ -713,8 +713,8 @@ export function apply(ctx, config = {}) {
   // Optional Hermes-style consolidation pass: deterministic curator first, then
   // one restricted child that merges overlapping skills into umbrellas. Off by
   // default; every archive must declare absorbed_into (enforced by skillctl).
-  async function runConsolidation(startedAt, autoSummary) {
-    if (!cfg.consolidateEnabled || disposed) return
+  async function runConsolidation(startedAt, autoSummary, force = false) {
+    if ((!cfg.consolidateEnabled && !force) || disposed) return
     const agent = mostRecentRootAgent()
     if (!agent) {
       log({ event: 'consolidate.skipped', reason: 'no live root session to parent the child' })
@@ -843,6 +843,31 @@ export function apply(ctx, config = {}) {
     })
   }
 
+  function maybeRunRequestedConsolidation() {
+    if (disposed || curatorRunning || reviewing) return
+    const marker = path.join(cfg.stateDir, 'consolidate.request')
+    if (!fs.existsSync(marker)) return
+    try {
+      fs.unlinkSync(marker)
+    } catch {
+      /* another path already consumed it */
+    }
+    curatorRunning = true
+    log({ event: 'consolidate.requested' })
+    runConsolidation(Date.now(), 'manual request', true)
+      .catch((error) => log({ event: 'consolidate.failed', error: errorText(error) }))
+      .finally(() => {
+        curatorRunning = false
+        if (!disposed) {
+          try {
+            ctx.timeout(() => drainQueue(), 1000)
+          } catch {
+            /* timer already disposed */
+          }
+        }
+      })
+  }
+
   function maybeRunCurator() {
     if (!cfg.curatorEnabled || curatorRunning || disposed || reviewing) return
     const now = Date.now()
@@ -950,6 +975,7 @@ export function apply(ctx, config = {}) {
       if (!state.selfTested && cfg.selfTestOnFirstRun) startSelfTest(agent)
       if (cfg.reviewEnabled) maybeQueueReview(sessionId)
       maybeRunCurator()
+      maybeRunRequestedConsolidation()
     } catch (error) {
       log({ event: 'session.handler-failed', error: errorText(error) })
     }

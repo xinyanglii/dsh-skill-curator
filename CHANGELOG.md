@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.1 — 2026-10-22
+
+- Manual consolidation trigger: `skillctl curator --request-consolidation` writes a
+  request marker that the plugin consumes at the next completed turn (works even when
+  `consolidateEnabled` is false, like Hermes's `curator run --consolidate`).
+- Test for the request marker.
+
 ## 0.3.0 — 2026-10-22
 
 - Optional Hermes-style consolidation pass (`consolidateEnabled`, off by default):
