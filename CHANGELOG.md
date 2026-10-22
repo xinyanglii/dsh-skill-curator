@@ -8,6 +8,8 @@
   added.
 - A pending `skillctl curator --request-consolidation` marker is also consumed on
   plugin activation, so a manual request survives a restart or bundle reload.
+- Manual consolidation runs no longer label the report section "Deterministic
+  curator (no LLM)"; only a real deterministic pass carries that summary.
 
 ## 0.3.0 — 2026-10-22
 

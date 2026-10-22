@@ -862,7 +862,7 @@ export function apply(ctx, config = {}) {
     }
     curatorRunning = true
     log({ event: 'consolidate.requested' })
-    runConsolidation(Date.now(), 'manual request', true)
+    runConsolidation(Date.now(), '', true)
       .catch((error) => log({ event: 'consolidate.failed', error: errorText(error) }))
       .finally(() => {
         curatorRunning = false
