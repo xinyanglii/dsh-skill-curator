@@ -13,6 +13,19 @@ window.__ModuleLoader__.load({
     const API = '/skill-curator/api'
     const POLL_MS = 5000
 
+    const HEADER_CSS = `
+.sc-subagents{position:relative;display:inline-flex;align-items:center}
+.sc-subagents-trigger{display:inline-flex;align-items:center;gap:6px;padding:3px 5px;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-tertiary);font:inherit;font-size:12px;line-height:18px;cursor:pointer}
+.sc-subagents-trigger:hover,.sc-subagents-trigger[aria-expanded=true]{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
+.sc-subagents-running{font-size:11px;color:var(--dsw-alias-state-business-primary)}
+.sc-subagents-menu{position:fixed;z-index:100;box-sizing:border-box;min-width:240px;max-width:340px;max-height:min(420px,60vh);overflow:auto;padding:4px;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-lg);background:var(--dsw-specific-menu);box-shadow:var(--dsw-elevation-prominent)}
+.sc-subagents-row{display:flex;align-items:center;gap:8px;width:100%;padding:7px 9px;border:0;border-radius:var(--dsw-radius-md);background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;line-height:17px;text-align:left;cursor:pointer}
+.sc-subagents-row:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.sc-subagents-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sc-subagents-dot{flex:none;width:7px;height:7px;border-radius:50%;background:var(--dsw-alias-label-tertiary)}
+.sc-subagents-dot-running{background:var(--dsw-alias-state-business-primary)}
+`
+
     const EN = {
       panelLabel: 'Skill Curator',
       title: 'Skill Curator',
@@ -21,10 +34,10 @@ window.__ModuleLoader__.load({
       reviewing: 'reviewing now',
       curatorRunning: 'tidying now',
       refresh: 'Refresh',
-      subagentCountOne: '{n} subagent',
-      subagentCountMany: '{n} subagents',
-      subagentRunning: '{n} running',
-      subagentOpen: 'Subagents',
+      curatorRunCountOne: '{n} curator run',
+      curatorRunCountMany: '{n} curator runs',
+      curatorRunRunning: '{n} running',
+      curatorRunsOpen: 'Skill curator runs',
       loading: 'Loading…',
       error: 'Could not read the curator state.',
       retry: 'Retry',
@@ -99,10 +112,10 @@ window.__ModuleLoader__.load({
       reviewing: '正在复盘',
       curatorRunning: '正在整理',
       refresh: '刷新',
-      subagentCountOne: '{n} 个子代理',
-      subagentCountMany: '{n} 个子代理',
-      subagentRunning: '{n} 个运行中',
-      subagentOpen: '子代理',
+      curatorRunCountOne: '{n} 个 curator 运行',
+      curatorRunCountMany: '{n} 个 curator 运行',
+      curatorRunRunning: '{n} 个运行中',
+      curatorRunsOpen: 'Curator 运行记录',
       loading: '加载中…',
       error: '读取策展状态失败。',
       retry: '重试',
@@ -469,7 +482,18 @@ window.__ModuleLoader__.load({
       const [position, setPosition] = useState(undefined)
       const rootRef = useRef(null)
       const triggerRef = useRef(null)
-      const entries = (Array.isArray(catalog) ? catalog : []).filter((entry) => !isInternalSubagent(entry))
+      const allEntries = Array.isArray(catalog) ? catalog : []
+      const entries = allEntries.filter(isInternalSubagent)
+      const userEntries = allEntries.filter((entry) => !isInternalSubagent(entry))
+
+      useEffect(() => {
+        const root = document.documentElement
+        root.dataset.scSubagentState = entries.length === 0
+          ? (userEntries.length === 0 ? 'none' : 'user')
+          : (userEntries.length === 0 ? 'internal' : 'mixed')
+        root.dataset.scSubagentUserCount = String(userEntries.length)
+        root.dataset.scSubagentInternalCount = String(entries.length)
+      }, [entries.length, userEntries.length])
 
       useEffect(() => {
         if (!open) return
@@ -497,11 +521,11 @@ window.__ModuleLoader__.load({
           ref: triggerRef,
           className: 'sc-subagents-trigger',
           'aria-expanded': open,
-          'aria-label': t('subagentOpen'),
+          'aria-label': t('curatorRunsOpen'),
           onClick: openMenu,
         },
-        h('span', null, fill(t(entries.length === 1 ? 'subagentCountOne' : 'subagentCountMany'), { n: entries.length })),
-        running > 0 ? h('span', { className: 'sc-subagents-running' }, fill(t('subagentRunning'), { n: running })) : null),
+        h('span', null, fill(t(entries.length === 1 ? 'curatorRunCountOne' : 'curatorRunCountMany'), { n: entries.length })),
+        running > 0 ? h('span', { className: 'sc-subagents-running' }, fill(t('curatorRunRunning'), { n: running })) : null),
         open && position
           ? h('div', { className: 'sc-subagents-menu', style: { top: position.top, right: position.right } },
               entries.map((entry) => h('button', {
@@ -1093,6 +1117,18 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots', 'locale'],
       apply(ctx) {
+        ctx.effect(() => {
+          if (typeof document.createElement !== 'function' || typeof document.getElementById !== 'function' || !document.head) {
+            return () => {}
+          }
+          const id = 'dsh-skill-curator-header-css'
+          if (document.getElementById(id)) return () => {}
+          const style = document.createElement('style')
+          style.id = id
+          style.textContent = HEADER_CSS
+          document.head.appendChild(style)
+          return () => style.remove()
+        }, 'skill-curator: header styles')
         try {
           ctx.effect(() => ctx.locale.register('skill-curator', 'en', EN))
           ctx.effect(() => ctx.locale.register('skill-curator', 'zh', ZH))
@@ -1142,9 +1178,8 @@ window.__ModuleLoader__.load({
         const LocalizedSubagentCatalog = localize(SubagentCatalogFilter)
         ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
           name: 'conversation.session.header.actions',
-          id: 'subagent-catalog',
-          order: 10,
-          priority: -1,
+          id: 'skill-curator-runs',
+          order: 11,
           inject: () => ({
             openSession: (address) => {
               try {
@@ -1155,6 +1190,73 @@ window.__ModuleLoader__.load({
             },
           }),
         }, LocalizedSubagentCatalog))
+
+        // Keep the shipped subagent catalog intact; hide its internal rows (and the
+        // trigger when only internal children exist) from the DOM. A new header
+        // action above lists those internal runs.
+        const internalLabel = (text) => {
+          if (typeof text !== 'string') return false
+          const value = text.trim().toLowerCase()
+          if (value.startsWith(INTERNAL_SUBAGENT_PREFIX.toLowerCase())) return true
+          return [...INTERNAL_SUBAGENT_LABELS].some((label) => value.startsWith(label.toLowerCase()))
+        }
+        const syncOriginalCatalog = () => {
+          const root = document.documentElement
+          const state = root.dataset.scSubagentState || 'none'
+          for (const button of document.querySelectorAll('button, [role="button"], [aria-haspopup]')) {
+            const rawText = (button.textContent || '').trim()
+            const ariaLabel = (button.getAttribute?.('aria-label') || '').trim()
+            const text = rawText || ariaLabel
+            if (/^\d+\s+(subagents?|个子代理)$/.test(text)) {
+              button.style.display = state === 'internal' ? 'none' : ''
+              if (state === 'mixed') {
+                const count = root.dataset.scSubagentUserCount || ''
+                const unit = text.includes('个子代理') ? '个子代理' : count === '1' ? 'subagent' : 'subagents'
+                if (count && text !== `${count} ${unit}`) {
+                  // Keep React-owned children intact and avoid observer feedback
+                  // when the displayed count is already correct.
+                  const walker = document.createTreeWalker(button, 4 /* SHOW_TEXT */)
+                  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+                    const next = node.data
+                      .replace(/^(\s*)\d+/, (_match, space) => `${space}${count}`)
+                      .replace(/\bsubagents?\b/, unit)
+                    if (node.data !== next) node.data = next
+                  }
+                  if (ariaLabel) button.setAttribute('aria-label', `${count} ${unit}`)
+                }
+              }
+            }
+          }
+          for (const row of document.querySelectorAll('[role="treeitem"], [role="row"]')) {
+            const label = (row.textContent || '').trim()
+            if (internalLabel(label)) row.style.display = 'none'
+          }
+        }
+        let scheduled = false
+        const scheduleCatalogSync = () => {
+          if (scheduled) return
+          scheduled = true
+          const run = () => {
+            scheduled = false
+            try {
+              syncOriginalCatalog()
+            } catch {
+              /* DOM is transient */
+            }
+          }
+          if (typeof queueMicrotask === 'function') queueMicrotask(run)
+          else setTimeout(run, 0)
+        }
+        ctx.effect(() => {
+          const observer = new MutationObserver(scheduleCatalogSync)
+          observer.observe(document.body, { childList: true, subtree: true })
+          const timer = setInterval(syncOriginalCatalog, 1000)
+          syncOriginalCatalog()
+          return () => {
+            observer.disconnect()
+            clearInterval(timer)
+          }
+        }, 'skill-curator: filter internal subagents')
       },
     }
   },

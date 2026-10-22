@@ -2,10 +2,11 @@
 
 ## Unreleased
 
-- Hide the curator's internal review/consolidation/self-test children from the
-  session subagent catalog: the header action filters entries whose label matches the
-  internal labels (including legacy `skill review` rows) and shows only user
-  subagents. Internal runs remain visible in the Skill Curator panel's review history.
+- Separate the curator's internal runs from the session subagent catalog. The shipped
+  subagents button is unchanged except that internal rows are hidden and its count is
+  corrected to user subagents only. A new `N curator runs` header action lists the
+  internal review/consolidation/self-test runs and opens them like the subagents
+  dropdown. Legacy `skill review` labels are filtered too.
 
 ## 0.3.2 — 2026-10-22
 

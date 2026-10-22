@@ -21,7 +21,7 @@ function fakeReact() {
   }
 }
 
-function loadClient() {
+function loadClient(overrides = {}) {
   let spec
   const sandbox = {
     window: { __ModuleLoader__: { load(value) { spec = value } } },
@@ -31,7 +31,23 @@ function loadClient() {
     fetch: async () => {
       throw new Error('fetch is not used while registering')
     },
-    document: { hidden: false, addEventListener() {}, removeEventListener() {}, activeElement: null },
+    document: {
+      hidden: false,
+      addEventListener() {},
+      removeEventListener() {},
+      activeElement: null,
+      documentElement: { dataset: {} },
+      body: {},
+      querySelectorAll: () => [],
+    },
+    MutationObserver: class {
+      observe() {}
+      disconnect() {}
+    },
+    setInterval: () => 0,
+    clearInterval: () => {},
+    queueMicrotask: (fn) => fn(),
+    ...overrides,
   }
   vm.createContext(sandbox)
   vm.runInContext(source, sandbox)
@@ -84,8 +100,70 @@ test('client half registers the sidebar icon and the main panel', () => {
   const catalog = registrations.find((entry) => entry.definition.name === 'conversation.session.header.actions')
   assert.equal(sidebar.definition.id, 'skill-curator')
   assert.equal(main.definition.key, 'skill-curator')
-  assert.equal(catalog.definition.id, 'subagent-catalog')
+  assert.equal(catalog.definition.id, 'skill-curator-runs')
   assert.equal(typeof sidebar.component, 'function')
   assert.equal(typeof main.component, 'function')
   assert.equal(typeof catalog.component, 'function')
 })
+
+
+for (const [initial, count, expected] of [
+  ['2 subagents', '2', '2 subagents'],
+  ['29 subagents', '2', '2 subagents'],
+  ['29 subagents', '1', '1 subagent'],
+  ['29 个子代理', '2', '2 个子代理'],
+]) {
+  test(`catalog observer settles without replacing button children: ${initial} -> ${expected}`, () => {
+    const jobs = []
+    const observers = []
+    const disposers = []
+    let text = initial
+    let writes = 0
+    let replacedChildren = 0
+    const notify = () => {
+      for (const observer of observers) {
+        if (observer.active) jobs.push(() => observer.callback([]))
+      }
+    }
+    const textNode = {
+      get data() { return text },
+      set data(value) { text = value; writes++; notify() },
+    }
+    const button = {
+      style: {},
+      get textContent() { return text },
+      set textContent(value) { text = value; writes++; replacedChildren++; notify() },
+    }
+    const spec = loadClient({
+      document: {
+        documentElement: { dataset: { scSubagentState: 'mixed', scSubagentUserCount: count } },
+        body: {},
+        querySelectorAll: (selector) => selector.includes('button') ? [button] : [],
+        createTreeWalker: () => {
+          let visited = false
+          return { nextNode: () => { if (visited) return null; visited = true; return textNode } }
+        },
+      },
+      MutationObserver: class {
+        constructor(callback) { this.callback = callback; observers.push(this) }
+        observe() { this.active = true }
+        disconnect() { this.active = false }
+      },
+      queueMicrotask: (fn) => jobs.push(fn),
+    })
+    const plugin = spec.factory(() => fakeReact())
+    plugin.apply({
+      locale: { register: () => () => {}, bind: () => (key) => key },
+      slots: { inject() {} },
+      effect(fn) { const dispose = fn(); if (typeof dispose === 'function') disposers.push(dispose) },
+    })
+    let rounds = 0
+    while (jobs.length && rounds++ < 20) jobs.shift()()
+    assert.equal(jobs.length, 0, 'DOM observer must settle instead of perpetually scheduling itself')
+    assert.equal(text, expected)
+    assert.equal(replacedChildren, 0, 'React-owned children and icons must stay intact')
+    assert.equal(writes, initial === expected ? 0 : 1)
+    for (const dispose of disposers) dispose()
+    assert.equal(observers[0].active, false)
+  })
+}

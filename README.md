@@ -248,13 +248,13 @@ reviewer may read them, but it never writes to them:
 - To let the curator maintain a hand-written skill, run `skillctl adopt <name>`; this
   sets `created_by: agent` without touching its clocks.
 
-### Internal runs are not listed as subagents
+### Internal runs get their own header action
 
-The `skill-review` and `skill-consolidate` children are internal work. Their label
-starts with `Skill Curator ·`, and the browser half filters those entries (plus the
-legacy `skill review` / `skill consolidation` labels) out of the session's subagent
-catalog. The header count therefore only covers real user subagents; internal runs
-stay visible in the Skill Curator panel's review history.
+The `skill-review` and `skill-consolidate` children are internal work. The shipped
+subagents button keeps its UI and behavior but filters those rows (including legacy
+`skill review` labels) and shows only user subagents. A separate `N curator runs`
+header action lists the internal runs and opens them with the same dropdown interaction;
+the rows are also in the Skill Curator panel's review history.
 
 ## Dashboard
 
