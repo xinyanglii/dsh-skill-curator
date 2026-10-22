@@ -282,6 +282,15 @@ class SkillctlTest(unittest.TestCase):
         self.assertTrue(marker.exists())
         self.assertIn("requested_at", marker.read_text())
 
+    def test_dry_run_consolidation_request_and_prompt(self):
+        result = self.run_cli("curator", "--request-consolidation", "--dry-run")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        marker = self.root / ".dsh-curator" / "consolidate.request"
+        request = json.loads(marker.read_text())
+        self.assertTrue(request["dry_run"])
+        prompt = self.run_cli("consolidate", "--dry-run")
+        self.assertIn("DRY RUN", prompt.stdout)
+
     def test_list_json_reports_library_metadata(self):
         self.make_skill("agent-skill")
         result = self.run_cli("list", "--json")

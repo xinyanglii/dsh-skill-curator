@@ -854,11 +854,13 @@ export function apply(ctx, config = {}) {
     } catch (error) {
       log({ event: 'consolidate.report-failed', error: errorText(error) })
     }
-    state.lastConsolidateAt = Date.now()
-    state.lastConsolidateSummary = report.counts
-      ? `${report.counts.consolidated} consolidated, ${report.counts.pruned} pruned, ${report.counts.added} added`
-      : ''
-    persistState()
+    if (!dryRun) {
+      state.lastConsolidateAt = Date.now()
+      state.lastConsolidateSummary = report.counts
+        ? `${report.counts.consolidated} consolidated, ${report.counts.pruned} pruned, ${report.counts.added} added`
+        : ''
+      persistState()
+    }
     log({
       event: 'consolidate.finished',
       stopReason,
