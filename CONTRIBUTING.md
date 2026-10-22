@@ -60,9 +60,12 @@ Rules of thumb:
 ## Release checklist
 
 Tags and GitHub releases are created **only when the maintainer explicitly asks**.
-Do not tag routine commits or every version bump.
+Do not tag routine commits. Do not bump `package.json` `version` on every change
+either: keep the last release version until the maintainer asks to prepare the next
+release, then bump the version and move the pending changelog entries under it.
 
-1. Update `CHANGELOG.md` and bump `package.json` `version` when the change warrants it.
+1. When asked to prepare a release: update `CHANGELOG.md` and bump `package.json`
+   `version` together.
 2. `npm test && npm run check`.
 3. When asked to release: tag `vX.Y.Z` and push it, then create the GitHub release.
 4. Verify a clean clone: install it into a throwaway profile, confirm `plugin.started`

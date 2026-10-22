@@ -1,12 +1,18 @@
 # Changelog
 
-## 0.3.3 — 2026-10-22
+## 0.3.2 — 2026-10-22 (unreleased)
 
-- Review context: the prompt now includes the skills the primary agent loaded this
-  session and requires the reviewer to treat their conventions as binding.
+- Prevent the background reviewer from duplicating user-owned skills: the review
+  prompt tags every skill with its origin, marks manual/learn/installed skills
+  read-only, and tells the reviewer to say `Nothing to save.` when a user-owned skill
+  already covers the lesson instead of creating a parallel agent skill.
+- Review context: the prompt includes the skills the primary agent loaded this
+  session and requires their conventions to be treated as binding.
 - Read-before-write for support files: `skill_read` can read one file and return its
   SHA; overwriting an existing support file requires that SHA, matching SKILL.md
   patches.
+- `skillctl` refuses agent writes to any non-agent skill (patch, write_file, archive),
+  and consolidation refuses to absorb into a user-owned umbrella.
 - Snapshot recovery: `backup --reason/--list`, `manifest.json`, and
   `rollback --snapshot <id|latest>` with an automatic pre-rollback snapshot.
 - Ops: `status [--json]`, `pause/resume`, `curator --dry-run`,
@@ -15,17 +21,6 @@
   `prune`, `purge`, and `ledger --skill/--json`.
 - The host skips automatic curator runs while paused and runs requested consolidation
   passes in dry-run mode when the marker asks for it.
-
-## 0.3.2 — 2026-10-22
-
-- Prevent the background reviewer from duplicating user-owned skills: the review
-  prompt now tags every skill with its origin, marks manual/learn/installed skills
-  read-only, and tells the reviewer to say `Nothing to save.` when a user-owned skill
-  already covers the lesson instead of creating a parallel agent skill.
-- `skillctl` refuses agent writes to any non-agent skill (patch, write_file, archive),
-  and consolidation refuses to absorb into a user-owned umbrella.
-- `skillctl adopt <name>` remains the explicit way to opt a hand-written skill into
-  curator management.
 
 ## 0.3.1 — 2026-10-22
 
