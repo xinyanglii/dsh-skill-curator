@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.2 — 2026-10-22
+
+- Prevent the background reviewer from duplicating user-owned skills: the review
+  prompt now tags every skill with its origin, marks manual/learn/installed skills
+  read-only, and tells the reviewer to say `Nothing to save.` when a user-owned skill
+  already covers the lesson instead of creating a parallel agent skill.
+- `skillctl` refuses agent writes to any non-agent skill (patch, write_file, archive),
+  and consolidation refuses to absorb into a user-owned umbrella.
+- `skillctl adopt <name>` remains the explicit way to opt a hand-written skill into
+  curator management.
+
 ## 0.3.1 — 2026-10-22
 
 - Fix: the Configuration form was missing the dashboard `reload` prop, so a

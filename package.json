@@ -1,6 +1,6 @@
 {
   "name": "dsh-skill-curator",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Hermes-style in-process background skill review and lifecycle curation for DeepSeek Harness, with a read-only dashboard.",
   "type": "module",
   "license": "MIT",

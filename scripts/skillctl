@@ -540,8 +540,9 @@ def guard_actor(name, actor, action):
         print("error: consolidation pass may not modify %r (not curator-managed; created_by=%r)"
               % (name, rec.get("created_by")), file=sys.stderr)
         return False
-    if actor == "agent" and rec.get("created_by") in ("learn", "installed"):
-        print("error: %s was created by %s; the background reviewer may not modify it" % (name, rec.get("created_by")), file=sys.stderr)
+    if actor == "agent" and rec.get("created_by") != "agent":
+        print("error: %s is user-owned (created_by=%r); the background reviewer may not modify it"
+              % (name, rec.get("created_by")), file=sys.stderr)
         return False
     return True
 
@@ -877,6 +878,10 @@ def cmd_archive(args):
                   file=sys.stderr)
             return 2
     data = load_usage()
+    if absorbed_into and in_consolidation_mode() and not is_curator_managed(data["skills"].get(absorbed_into, {})):
+        print("error: absorbed_into=%r is not curator-managed; the consolidation pass cannot absorb into a user-owned skill"
+              % absorbed_into, file=sys.stderr)
+        return 2
     if not (ROOT / args.name).is_dir():
         print("error: no skill %r" % args.name, file=sys.stderr)
         return 2
@@ -1007,7 +1012,13 @@ def review_prompt(transcript, skills):
         '   append "UPDATE: actually...".',
         "4. Do NOT capture: failed attempts, environment quirks, negative claims about tools,",
         "   one-off task narration, or secrets.",
-        "5. Prefer updating an existing skill over creating a new one. Read it before writing.",
+        "5. Prefer updating an existing CURATOR-MANAGED skill over creating a new one. Read it",
+        "   before writing.",
+        "5b. Existing skills are tagged by origin. [agent] is curator-managed and yours to edit.",
+        "    [manual], [learn] and [installed] are USER-OWNED and READ-ONLY to you: never patch,",
+        "    write into, or archive them.",
+        "5c. If a user-owned skill already covers the workflow or lesson, do NOT create a parallel",
+        "    agent skill; that is a duplicate. Say exactly: Nothing to save.",
         *tool_rules,
         "7. Name: lowercase-hyphenated. Description: one sentence, quoted, under 120 chars.",
         "",
@@ -1025,11 +1036,14 @@ def review_prompt(transcript, skills):
 def cmd_review(args):
     session_id = args.session
     transcript = session_transcript(session_id, args.max_chars) if session_id else ""
+    data = load_usage()
     skills = []
     for directory in skill_dirs():
         block, _, _ = split_frontmatter(directory.joinpath("SKILL.md").read_text(encoding="utf-8"))
         fm, _ = parse_frontmatter(block or "")
-        skills.append("- %s: %s" % (directory.name, str(fm.get("description", ""))[:120]))
+        rec = data["skills"].get(directory.name, {})
+        origin = rec.get("created_by") or "manual"
+        skills.append("- [%s] %s: %s" % (origin, directory.name, str(fm.get("description", ""))[:120]))
     print(review_prompt(transcript, skills))
     return 0
 

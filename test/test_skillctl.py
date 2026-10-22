@@ -253,6 +253,17 @@ class SkillctlTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("not curator-managed", result.stderr)
 
+    def test_consolidation_mode_refuses_absorbing_into_a_user_owned_skill(self):
+        self.make_skill("manual-umbrella", created_by="manual")
+        self.make_skill("agent-sibling")
+        result = self.run_cli(
+            "manage", "archive", "agent-sibling", "--absorbed-into=manual-umbrella", "--actor=agent",
+            extra_env={"DSH_CURATOR_CONSOLIDATION": "1"},
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not curator-managed", result.stderr)
+        self.assertTrue((self.root / "agent-sibling").exists())
+
     def test_consolidation_mode_refuses_pinned_skills(self):
         self.make_skill("pinned-skill")
         self.assertEqual(self.run_cli("pin", "pinned-skill").returncode, 0)
@@ -281,6 +292,40 @@ class SkillctlTest(unittest.TestCase):
         self.assertGreater(row["bytes"], 0)
         self.assertIn("description", row)
 
+    def test_review_prompt_tags_each_skill_with_its_origin(self):
+        self.make_skill("agent-skill")
+        self.make_skill("manual-skill", created_by="manual")
+        result = self.run_cli("review")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("- [agent] agent-skill:", result.stdout)
+        self.assertIn("- [manual] manual-skill:", result.stdout)
+        self.assertIn("READ-ONLY", result.stdout)
+        self.assertIn("do NOT create a parallel", result.stdout)
+        self.assertIn("Nothing to save.", result.stdout)
+
+    def test_reviewer_cannot_modify_a_user_owned_skill(self):
+        self.make_skill("manual-skill", created_by="manual")
+        sha = hashlib.sha256((self.root / "manual-skill" / "SKILL.md").read_bytes()).hexdigest()
+        patch = self.run_cli(
+            "manage", "patch", "manual-skill", "--old=Use it.", "--new=Use it now.",
+            "--expect-sha=" + sha, "--actor=agent",
+        )
+        self.assertNotEqual(patch.returncode, 0)
+        self.assertIn("user-owned", patch.stderr)
+        archive = self.run_cli("manage", "archive", "manual-skill", "--actor=agent")
+        self.assertNotEqual(archive.returncode, 0)
+        self.assertIn("user-owned", archive.stderr)
+        self.assertTrue((self.root / "manual-skill").exists())
+
+    def test_reviewer_can_still_patch_agent_owned_skills(self):
+        self.make_skill("agent-skill")
+        sha = hashlib.sha256((self.root / "agent-skill" / "SKILL.md").read_bytes()).hexdigest()
+        result = self.run_cli(
+            "manage", "patch", "agent-skill", "--old=Use it.", "--new=Use it now.",
+            "--expect-sha=" + sha, "--actor=agent",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_validate_accepts_a_generated_skill(self):
         self.create_demo()
         result = self.run_cli("validate", "demo")
@@ -294,10 +339,11 @@ class SkillctlTest(unittest.TestCase):
         spec = importlib.util.spec_from_loader("skillctl", loader)
         module = importlib.util.module_from_spec(spec)
         loader.exec_module(module)
-        prompt = module.review_prompt("user: hello\nassistant: hi", ["- demo: Demo skill"])
+        prompt = module.review_prompt("user: hello\nassistant: hi", ["- [agent] demo: Demo skill"])
         self.assertIn("background skill REVIEWER", prompt)
         self.assertIn("user: hello", prompt)
-        self.assertIn("- demo: Demo skill", prompt)
+        self.assertIn("- [agent] demo: Demo skill", prompt)
+        self.assertIn("USER-OWNED", prompt)
         self.assertIn("Nothing to save.", prompt)
         self.assertIn("skill_manage", prompt)
 

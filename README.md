@@ -201,6 +201,20 @@ curator-managed library and builds umbrellas.
   it at the next completed turn and runs one pass even when `consolidateEnabled` is false.
 - Unlike Hermes, DSH has no cron-job skill references, so there is no cron rewrite step.
 
+### User-owned skills
+
+Skills with `created_by: manual`, `learn` or `installed` are user-owned. The background
+reviewer may read them, but it never writes to them:
+
+- The review prompt tags every skill with its origin; `[manual]`, `[learn]` and
+  `[installed]` are marked read-only.
+- If a user-owned skill already covers the workflow or lesson, the reviewer must say
+  `Nothing to save.` instead of creating a parallel agent skill.
+- `skillctl` refuses agent writes (patch, write_file, archive) to user-owned skills, and
+  the consolidation pass cannot absorb anything into one.
+- To let the curator maintain a hand-written skill, run `skillctl adopt <name>`; this
+  sets `created_by: agent` without touching its clocks.
+
 ## Dashboard
 
 - Sidebar entry **Skill Curator** → full-width main panel.
