@@ -39,6 +39,11 @@ function loadClient() {
   return spec
 }
 
+test('configuration form is wired to the dashboard reload function', () => {
+  assert.match(source, /h\(Configuration, \{ data, t, reload \}\)/)
+  assert.match(source, /typeof reload === 'function'/)
+})
+
 test('client half registers the sidebar icon and the main panel', () => {
   const spec = loadClient()
   assert.equal(spec.id, 'dsh-skill-curator')

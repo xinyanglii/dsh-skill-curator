@@ -606,7 +606,13 @@ window.__ModuleLoader__.load({
           if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`)
           setDirty(false)
           setStatus(t('cfgSaved'))
-          reload()
+          if (typeof reload === 'function') {
+            try {
+              reload()
+            } catch {
+              /* the save already succeeded; a failed refresh is not a save failure */
+            }
+          }
         } catch (error) {
           setFailed(true)
           setStatus(`${t('cfgSaveError')} ${String(error && error.message ? error.message : error)}`)
@@ -972,7 +978,7 @@ window.__ModuleLoader__.load({
       const activitySection = h(Section, { title: t('sectionActivity') },
         h('div', { className: 'sc-card' }, h(Cadence, { activity: (data && data.activity) || [], t })))
 
-      const configSection = data ? h(Section, { title: t('sectionConfig') }, h(Configuration, { data, t })) : null
+      const configSection = data ? h(Section, { title: t('sectionConfig') }, h(Configuration, { data, t, reload })) : null
 
       return h(React.Fragment, null,
         h('style', { key: 'sc-style' }, CSS),

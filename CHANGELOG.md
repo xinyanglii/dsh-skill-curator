@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.1 — 2026-10-22
+
+- Fix: the Configuration form was missing the dashboard `reload` prop, so a
+  successful save still showed `Save failed: reload is not a function`. Saves now
+  show Saved and refresh only when the reload function exists; regression check
+  added.
+
 ## 0.3.0 — 2026-10-22
 
 First public release.
