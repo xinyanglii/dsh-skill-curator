@@ -28,7 +28,9 @@ window.__ModuleLoader__.load({
 .sc-subagents-menu{position:fixed;z-index:100;box-sizing:border-box;min-width:240px;max-width:340px;max-height:min(420px,60vh);overflow:auto;padding:4px;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-lg);background:var(--dsw-specific-menu);box-shadow:var(--dsw-elevation-prominent)}
 .sc-subagents-row{display:flex;align-items:center;gap:8px;width:100%;padding:7px 9px;border:0;border-radius:var(--dsw-radius-md);background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;line-height:17px;text-align:left;cursor:pointer}
 .sc-subagents-row:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.sc-subagents-body{display:flex;flex-direction:column;min-width:0;gap:1px}
 .sc-subagents-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sc-subagents-meta{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-tertiary);font-size:10px;line-height:14px;font-variant-numeric:tabular-nums}
 .sc-subagents-dot{flex:none;width:7px;height:7px;border-radius:50%;background:var(--dsw-alias-label-tertiary)}
 .sc-subagents-dot-running{background:var(--dsw-alias-state-business-primary)}
 `
@@ -45,6 +47,7 @@ window.__ModuleLoader__.load({
       curatorRunCountMany: '{n} curator runs',
       curatorRunRunning: '{n} running',
       curatorRunsOpen: 'Skill curator runs',
+      curatorRunAgo: 'ago',
       loading: 'Loading…',
       error: 'Could not read the curator state.',
       retry: 'Retry',
@@ -123,6 +126,7 @@ window.__ModuleLoader__.load({
       curatorRunCountMany: '{n} 个 curator 运行',
       curatorRunRunning: '{n} 个运行中',
       curatorRunsOpen: 'Curator 运行记录',
+      curatorRunAgo: '前',
       loading: '加载中…',
       error: '读取策展状态失败。',
       retry: '重试',
@@ -550,6 +554,7 @@ window.__ModuleLoader__.load({
         type: 'button',
         key: entry.id,
         className: 'sc-subagents-row',
+        title: entry.id,
         onClick: () => {
           setOpen(false)
           setOpenError('')
@@ -561,7 +566,11 @@ window.__ModuleLoader__.load({
         },
       },
       h('span', { className: `sc-subagents-dot${(statuses.get(entry.id)?.running ?? false) ? ' sc-subagents-dot-running' : ''}` }),
-      h('span', { className: 'sc-subagents-label' }, entry.label || entry.id))))
+      h('span', { className: 'sc-subagents-body' },
+        h('span', { className: 'sc-subagents-label' }, entry.label || entry.id),
+        h('span', { className: 'sc-subagents-meta' },
+          [relative(entry.createdAt), t('curatorRunAgo'), entry.mode, `#${String(entry.id).slice(0, 8)}`]
+            .filter(Boolean).join(' · '))))))
 
       return h('div', { className: 'sc-subagents', ref: rootRef },
         h('button', {
