@@ -1,0 +1,198 @@
+# dsh-skill-curator
+
+[![test](https://github.com/xinyanglii/dsh-skill-curator/actions/workflows/test.yml/badge.svg)](https://github.com/xinyanglii/dsh-skill-curator/actions/workflows/test.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![node >= 20](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](package.json)
+
+Hermes-style, in-process background skill learning for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
+
+It watches finished conversations, reviews them in a restricted child agent, writes
+class-level skills through a validated CLI, keeps the library tidy with a
+deterministic lifecycle curator, and ships a read-only dashboard panel.
+
+## What it does
+
+- **Post-turn review.** Counts model iterations per root session (one per assistant
+  step, parallel tool calls in a step count once) across turns. When a completed turn
+  crosses the threshold, it starts a review child in the same process.
+- **Restricted reviewer.** The child runs under the bundled `skill-review` agent preset:
+  a persona plus `skill_list` / `skill_read` / `skill_manage`. No shell, no direct file
+  writes, no network tools.
+- **Validated writes.** Every write goes through `skillctl` (vendored in `scripts/`):
+  name and frontmatter validation, read-before-write SHA checks, support-file path
+  confinement, append-only ledger with blobs, and archive instead of delete.
+- **Lifecycle curator.** Once per `curatorEveryDays` it runs `skillctl curator --apply`:
+  `active → stale` (14 days unused) → `archived` (30 days unused). Archive-only and
+  reversible.
+- **Usage telemetry.** Skill loads are folded into `<skillsRoot>/.dsh-usage.json`, the
+  same file the curator reads.
+- **Dashboard.** A sidebar panel (`Skill Curator`) backed by two loopback-only GET
+  routes: library, review history, 14-day activity, and a collapsed technical section.
+- **Self-test canary.** On first activation it starts one canary child that must resolve
+  the preset and call `skill_list`, so a broken setup fails visibly before the first
+  real review.
+
+## How it works
+
+```
+session events ──► iteration counter (root sessions only, persisted)
+                         │
+             completed turn, counter ≥ threshold
+                         ▼
+              skillctl review --session <id>        (build prompt from the transcript)
+                         ▼
+        subagent activation under the `skill-review` preset
+        (persona + skill_list / skill_read / skill_manage only)
+                         ▼
+              skillctl manage create|patch|write_file|archive
+              (validate → write → ledger → usage)
+                         ▼
+        review.finished / review.failed → state.json → dashboard
+```
+
+The plugin never edits `SKILL.md` itself and never exposes a write API to the browser.
+
+## Requirements
+
+| Requirement | Notes |
+|---|---|
+| DeepSeek Harness | Developed against `0.2.1-rc.2`; bundles are ordinary profile patch layers. |
+| Node.js | `>= 20` for the host plugin. |
+| Python | `>= 3.9` on `PATH` (or set `python` / `DSH_CURATOR_PYTHON`). |
+| `zstd` | `zstdcat` is used to read session logs for transcripts and usage scans. Install with `brew install zstd` or `apt install zstd`. |
+
+## Install
+
+A DSH bundle is a package with a `dsh.bundle.patch` layer. Installing the package does
+not activate it; add it to the profile's bundle list as well.
+
+### From GitHub
+
+```bash
+# 1. Install the package into the profile (creates ~/.dsh/profiles/<name>/node_modules)
+dsh plugin --profile desktop add github:xinyanglii/dsh-skill-curator
+
+# 2. Activate the bundle: add "dsh-skill-curator" to dsh.profile.bundles in
+#    ~/.dsh/profiles/desktop/package.json
+
+# 3. Restart the app once so the browser half is loaded.
+```
+
+Use `--profile web` (or another profile) to install into a different runtime. The
+dashboard only appears in Web/Desktop profiles; headless and ACP profiles have no
+browser surface.
+
+### From a local checkout
+
+```bash
+git clone https://github.com/xinyanglii/dsh-skill-curator.git
+dsh plugin --profile desktop add /absolute/path/to/dsh-skill-curator
+# then add "dsh-skill-curator" to dsh.profile.bundles
+```
+
+### Verify
+
+```bash
+tail ~/.dsh/skills/.dsh-curator/plugin.log     # plugin.started / dashboard.registered
+curl http://127.0.0.1:<port>/skill-curator/api/state
+```
+
+The port is the profile's Web host; the desktop app proxies it internally.
+
+## Configuration
+
+Override any value from the profile's `cordis.patch.yml` by row id (`skill-curator`):
+
+```yaml
+- id: skill-curator
+  config:
+    nudgeAfterToolIters: 10
+    python: /usr/bin/python3
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | Master switch. |
+| `skillsRoot` | `~/.dsh/skills` | Skill library root (shared by every profile). |
+| `skillctl` | packaged `scripts/skillctl` | Authoring CLI used for prompts and writes. |
+| `python` | `python3` | Interpreter for `skillctl` (`DSH_CURATOR_PYTHON` also works). |
+| `stateDir` | `<skillsRoot>/.dsh-curator` | `state.json` and `plugin.log`. |
+| `nudgeAfterToolIters` | `10` | Accumulated model iterations before a review. |
+| `reviewEnabled` | `true` | Trigger reviews at all. |
+| `reviewPreset` | `skill-review` | Agent preset mounted for the child. |
+| `reviewProvider` | `spawn` | Subagent provider used for the child. |
+| `reviewAgentProvider` / `reviewAgentModel` | empty | Explicit reviewer route; empty copies the parent session's live route. |
+| `reviewTimeoutMs` | `900000` | Hard timeout for one review. |
+| `maxTranscriptChars` | `40000` | Transcript budget passed to `skillctl review`. |
+| `curatorEnabled` | `true` | Run the deterministic lifecycle curator. |
+| `curatorEveryDays` | `7` | Minimum interval between curator runs. |
+| `staleDays` | `14` | Unused days before a skill becomes stale. |
+| `archiveDays` | `30` | Unused days before a stale skill is archived. |
+| `selfTestOnFirstRun` | `true` | Run the one-shot canary on first activation. |
+| `maxSessions` | `200` | Session-counter records kept in state. |
+| `logMaxBytes` | `2097152` | Rotate `plugin.log` after this size. |
+
+## Skill lifecycle and layout
+
+```
+~/.dsh/skills/
+├── <skill>/SKILL.md            # skills themselves
+├── .dsh-usage.json             # use counts, last-used, state, provenance
+├── .curator_ledger.jsonl       # append-only write ledger
+├── .ledger/blobs/              # content blobs for rollback
+├── .curator_backups/           # tree snapshots
+├── .archive/                   # archived skills (never deleted)
+└── .dsh-curator/               # state.json, plugin.log
+```
+
+Available `skill_manage` actions: `create`, `patch`, `write_file`, `archive`.
+There is deliberately no delete action; `skillctl restore` brings an archived skill back.
+
+## Dashboard
+
+- Sidebar entry **Skill Curator** → full-width main panel.
+- `GET /skill-curator/api/state` and `GET /skill-curator/api/skill?name=<name>`.
+- GET-only, loopback-only (`127.0.0.1`, `::1`), skill names validated, nothing outside
+  `<skillsRoot>/<name>/SKILL.md`.
+- Read-only: the browser half has no write path.
+
+## Security model
+
+- The review child sees only the three skill tools; the `skill-review` preset scope
+  denies every other global tool, incrementally and defensively.
+- The reviewer receives the conversation transcript (up to `maxTranscriptChars`) and the
+  skill list; it runs on the same model route as the session it reviews unless overridden.
+  Do not enable this plugin on sessions whose transcripts must not leave the model
+  provider you already use.
+- `skillctl` runs as the current user and writes only under `skillsRoot` (plus archive,
+  ledger, backups and state beneath it). It never reads credential files.
+- HTTP routes are loopback-only and expose no files outside the skill directory.
+
+## Tests
+
+```bash
+npm test
+```
+
+- `node --test test/*.test.js` covers the manifest, bundle patch, dashboard routes
+  (200/400/403/405, traversal, dispose), preset tool registration and argument
+  validation against a fake `skillctl`, and the browser-half registration.
+- `python3 -m unittest discover -s test -p 'test_*.py'` covers the vendored `skillctl`:
+  create, patch with SHA checks, confined support files, archive/restore, validation, and
+  the reviewer prompt builder.
+- CI runs both on Node 20/22 with Python 3.11.
+
+## Compatibility notes
+
+- Counting matches Hermes's `_iters_since_skill`: one per model iteration, accumulated
+  across turns, checked at turn end. Hermes's separate memory nudge counter is not
+  implemented here; long-term memory belongs to your memory plugin.
+- Cron/scheduled sessions are not skipped. Only root sessions are counted; review
+  children are excluded.
+- Adding or removing `dsh.client` metadata on an already-loaded package specifier needs
+  an App restart. Code-only changes to an installed bundle can be reloaded by removing
+  and reinstalling the bundle.
+
+## License
+
+MIT © 2026 Xinyang Li

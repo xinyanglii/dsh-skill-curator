@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Skill Curator">
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#111827"/>
+  <path d="M18 16h22a6 6 0 0 1 6 6v3H24a6 6 0 0 0-6 6v17h-2a4 4 0 0 1-4-4V22a6 6 0 0 1 6-6z" fill="#e5e7eb"/>
+  <path d="M24 27h26v21a4 4 0 0 1-4 4H24a4 4 0 0 1-4-4V31a4 4 0 0 1 4-4z" fill="#93c5fd"/>
+  <path d="M27 34h20M27 40h20M27 46h13" stroke="#111827" stroke-width="2.4" stroke-linecap="round"/>
+  <path d="M46 10l1.6 4.4L52 16l-4.4 1.6L46 22l-1.6-4.4L40 16l4.4-1.6z" fill="#fbbf24"/>
+</svg>

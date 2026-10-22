@@ -1,0 +1,10 @@
+node_modules/
+.DS_Store
+*.log
+__pycache__/
+*.pyc
+.dsh-curator/
+.curator_ledger.jsonl
+.curator_backups/
+.dsh-usage.json
+coverage/

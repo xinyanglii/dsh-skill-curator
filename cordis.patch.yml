@@ -1,0 +1,49 @@
+# dsh-skill-curator bundle patch.
+#
+# Two rows: the Host plugin that watches turns and starts the review child, and
+# the internal `skill-review` preset that gives that child its restricted tool
+# surface (persona + skill tools only; no shell, no file writes).
+#
+# Paths are computed at load time so the bundle follows $HOME instead of
+# pinning one machine. Override any value from the profile's cordis.patch.yml
+# by row id.
+- insert:
+    - id: skill-curator
+      name: 'dsh-skill-curator'
+      config:
+        skillsRoot: !!js process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:os').homedir(), '.dsh', 'skills')
+        python: !!js process.env.DSH_CURATOR_PYTHON || 'python3'
+        nudgeAfterToolIters: 10
+        reviewEnabled: true
+        reviewPreset: skill-review
+        reviewProvider: spawn
+        reviewTimeoutMs: 900000
+        maxTranscriptChars: 40000
+        curatorEnabled: true
+        curatorEveryDays: 7
+        staleDays: 14
+        archiveDays: 30
+        selfTestOnFirstRun: true
+
+    - id: preset-skill-review
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: skill-review
+        name: Skill Review
+        description: Internal one-shot reviewer for the local skill library, started by the background skill curator. Not meant for user work.
+        order: 90
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: >-
+                You are DSH's background skill reviewer. You keep the local skill library
+                current: you read finished work, then create or patch class-level skills
+                through the skill tools. Work only through those tools.
+              complete: true
+              includeRuntimeContext: false
+          - id: skill-review-tools
+            name: 'dsh-skill-curator/preset'
+            config:
+              skillsRoot: !!js process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:os').homedir(), '.dsh', 'skills')
+              python: !!js process.env.DSH_CURATOR_PYTHON || 'python3'

@@ -1,0 +1,936 @@
+#!/usr/bin/env python3
+"""skillctl - author, manage, review and curate DSH skills.
+
+Hermes-compatible lifecycle in one file:
+  * skill_manage-style writes (create / patch / edit / write_file / archive)
+    with frontmatter validation, provenance, read-before-write hash checks,
+    guards and an append-only ledger.
+  * usage telemetry in <root>/.dsh-usage.json (use / patch / state / pinned /
+    created_by), scanned from DSH session logs.
+  * curator transitions active -> stale(14d) -> archived(30d), archive-only.
+  * background review prompt builder (the Hermes review-fork equivalent); the
+    in-process skill-curator plugin consumes it and runs the reviewer itself.
+  * tree snapshots and ledger rollback.
+
+Root defaults to ~/.dsh/skills.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+HOME = Path.home()
+ROOT = Path(os.environ.get("DSH_SKILLS_ROOT") or HOME / ".dsh" / "skills")
+ARCHIVE = ROOT / ".archive"
+USAGE = ROOT / ".dsh-usage.json"
+LEDGER = ROOT / ".curator_ledger.jsonl"
+BLOBS = ROOT / ".ledger" / "blobs"
+BACKUPS = ROOT / ".curator_backups"
+SESSIONS = Path(os.environ.get("DSH_SESSIONS") or HOME / ".dsh" / "sessions")
+
+NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+KNOWN_KEYS = {"name", "description", "whenToUse", "metadata",
+              "disable-model-invocation", "user-invocable"}
+DSH_DESC_CAP = 500
+RECOMMENDED_DESC = 120
+MAX_BODY = 24000
+SUPPORT_DIRS = ("references", "scripts", "templates", "assets")
+FENCE = chr(96) * 3
+
+
+def now():
+    return datetime.now(timezone.utc)
+
+
+def iso(dt):
+    return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def parse_iso(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def sha_bytes(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def sha_file(path):
+    return sha_bytes(path.read_bytes())
+
+
+def valid_name(name):
+    return bool(NAME_RE.match(str(name)))
+
+
+def load_json(path, default):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return default
+
+
+def save_json(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def load_usage():
+    data = load_json(USAGE, {"version": 1, "skills": {}})
+    if not isinstance(data, dict) or not isinstance(data.get("skills"), dict):
+        return {"version": 1, "skills": {}}
+    return data
+
+
+def save_usage(data):
+    save_json(USAGE, data)
+
+
+def record(data, name):
+    rec = data["skills"].setdefault(name, {})
+    defaults = {
+        "created_at": None, "first_seen_at": None, "created_by": "manual",
+        "use_count": 0, "view_count": 0, "patch_count": 0,
+        "last_used_at": None, "last_viewed_at": None, "last_patched_at": None,
+        "state": "active", "pinned": False, "archived_at": None,
+    }
+    for key, value in defaults.items():
+        rec.setdefault(key, value)
+    return rec
+
+
+def skill_dirs():
+    if not ROOT.is_dir():
+        return []
+    out = []
+    for child in sorted(ROOT.iterdir()):
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        if (child / "SKILL.md").is_file():
+            out.append(child)
+    return out
+
+
+# ---------------------------------------------------------------- frontmatter
+
+def split_frontmatter(text):
+    if not text.startswith("---"):
+        return None, text, ["missing frontmatter: file must start with ---"]
+    m = re.match(r"^---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(\r?\n|$)", text, re.S)
+    if not m:
+        return None, text, ["unterminated frontmatter"]
+    return m.group(1), text[m.end():], []
+
+
+def parse_frontmatter(block):
+    data, errors = {}, []
+    in_block = False
+    for raw in block.splitlines():
+        if in_block:
+            if raw.strip() == "" or raw.startswith((" ", "\t")):
+                continue
+            in_block = False
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        if raw.startswith((" ", "\t")):
+            continue
+        m = re.match(r"^([A-Za-z0-9_-]+):(.*)$", raw)
+        if not m:
+            errors.append("unparsable frontmatter line: %r" % raw[:60])
+            continue
+        key, rest = m.group(1), m.group(2)
+        if key in data:
+            errors.append("duplicate key %r" % key)
+        val = rest.strip()
+        if re.match(r"^[|>][+-]?\d*$", val):
+            data[key] = "<block scalar>"
+            in_block = True
+            continue
+        if val[:1] in (chr(39), chr(34)):
+            if len(val) < 2 or not val.endswith(val[0]):
+                errors.append("%r: unterminated quoted value" % key)
+            data[key] = val[1:-1]
+            continue
+        if re.search(r":\s", val):
+            errors.append("%r: plain value contains colon-space - YAML rejects it; quote the value" % key)
+        if " #" in val:
+            errors.append("%r: plain value contains space-hash - quote the value" % key)
+        data[key] = val
+    return data, errors
+
+
+def check_skill(path):
+    errors, warnings = [], []
+    name = path.parent.name
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return ["cannot read %s: %s" % (path, exc)], []
+    block, body, errs = split_frontmatter(text)
+    errors.extend(errs)
+    if block is None:
+        return errors, warnings
+    data, errs = parse_frontmatter(block)
+    errors.extend(errs)
+    fm_name = str(data.get("name", ""))
+    if not fm_name:
+        errors.append("missing required key name")
+    elif not NAME_RE.match(fm_name):
+        errors.append("name %r must be lowercase letters/digits/hyphens, <=64 chars" % fm_name)
+    elif fm_name != name:
+        errors.append("frontmatter name %r != directory name %r" % (fm_name, name))
+    desc = str(data.get("description", ""))
+    if not desc:
+        errors.append("missing required key description")
+    elif len(desc) > DSH_DESC_CAP:
+        errors.append("description is %d chars; DSH truncates at %d" % (len(desc), DSH_DESC_CAP))
+    elif len(desc) > RECOMMENDED_DESC:
+        warnings.append("description is %d chars; keep <=%d for reliable routing" % (len(desc), RECOMMENDED_DESC))
+    for key in data:
+        if key not in KNOWN_KEYS:
+            warnings.append("key %r is ignored by DSH" % key)
+    if "\t" in block:
+        errors.append("frontmatter contains a tab character")
+    size = len(text.encode("utf-8"))
+    if size > MAX_BODY:
+        warnings.append("SKILL.md is %d bytes; keep under %d" % (size, MAX_BODY))
+    if "## When to Use" not in body:
+        warnings.append("body has no ## When to Use section")
+    if "## Verification" not in body:
+        warnings.append("body has no ## Verification section")
+    return errors, warnings
+
+
+# --------------------------------------------------------------------- ledger
+
+def snapshot_tree(directory):
+    files = {}
+    if not directory.is_dir():
+        return files
+    for path in sorted(directory.rglob("*")):
+        if path.is_file():
+            files[str(path.relative_to(directory))] = store_blob(path.read_bytes())
+    return files
+
+
+def store_blob(data):
+    BLOBS.mkdir(parents=True, exist_ok=True)
+    digest = sha_bytes(data)
+    path = BLOBS / digest
+    if not path.exists():
+        path.write_bytes(data)
+    return digest
+
+
+def ledger_append(op, name, before, after, actor="user"):
+    entry = {
+        "id": "%s-%s" % (int(time.time() * 1000), sha_bytes((str(time.time()) + name + op).encode())[:8]),
+        "ts": iso(now()),
+        "op": op,
+        "name": name,
+        "actor": actor,
+        "before": before,
+        "after": after,
+    }
+    LEDGER.parent.mkdir(parents=True, exist_ok=True)
+    with LEDGER.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    return entry
+
+
+def capture_before(name, actor, op, mutate):
+    directory = ROOT / name
+    before = snapshot_tree(directory)
+    mutate()
+    after = snapshot_tree(directory)
+    ledger_append(op, name, before, after, actor)
+
+
+def rollback_entry(entry_id):
+    entries = [json.loads(line) for line in LEDGER.read_text(encoding="utf-8").splitlines() if line.strip()]
+    entry = next((e for e in entries if e["id"] == entry_id), None)
+    if entry is None:
+        print("error: no ledger entry %r" % entry_id, file=sys.stderr)
+        return 2
+    directory = ROOT / entry["name"]
+    missing = [digest for digest in entry["before"].values() if not (BLOBS / digest).is_file()]
+    if missing:
+        print("error: missing blobs %s; refusing partial rollback" % missing, file=sys.stderr)
+        return 2
+    if directory.exists():
+        shutil.rmtree(directory)
+    directory.mkdir(parents=True)
+    for rel, digest in entry["before"].items():
+        target = directory / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((BLOBS / digest).read_bytes())
+    print("rolled back %s (%s %s)" % (entry_id, entry["op"], entry["name"]))
+    return 0
+
+
+# ------------------------------------------------------------------ commands
+
+def cmd_new(args, body=None):
+    """Create a skill.
+
+    Without body, write the generic skeleton. With body (the `--file` input of
+    `manage create`), the caller supplies the markdown body only; the frontmatter
+    is generated here so a model can never hand-write invalid YAML.
+    """
+    name = args.name
+    if not NAME_RE.match(name):
+        print("error: invalid name %r (lowercase letters/digits/hyphens, <=64)" % name, file=sys.stderr)
+        return 2
+    path = ROOT / name / "SKILL.md"
+    if path.exists():
+        print("error: %s already exists" % path, file=sys.stderr)
+        return 2
+    if body is not None and not args.description:
+        print("error: --file requires --description", file=sys.stderr)
+        return 2
+    desc = json.dumps(args.description, ensure_ascii=False)
+    if body is not None:
+        if body.lstrip().startswith("---"):
+            print("error: --file content must be the body only; frontmatter is generated", file=sys.stderr)
+            return 2
+        text = "\n".join(["---", "name: %s" % name, "description: %s" % desc, "---", "",
+                          body.strip(), ""])
+    else:
+        title = name.replace("-", " ").title()
+        text = "\n".join([
+            "---", "name: %s" % name, "description: %s" % desc, "---", "",
+            "# %s" % title, "",
+            "One or two sentences: what this skill does and does not do.", "",
+            "## When to Use", "", "- Concrete trigger phrase.", "",
+            "## Prerequisites", "", "- None.", "",
+            "## How to Run", "", "Run the canonical command.", "",
+            "## Quick Reference", "", "- command - what it does", "",
+            "## Procedure", "", "1. Step one.", "2. Step two.", "",
+            "## Pitfalls", "", "- Known limit.", "",
+            "## Verification", "", "Run one check that proves it worked.", "",
+        ])
+
+    def write():
+        path.parent.mkdir(parents=True)
+        path.write_text(text, encoding="utf-8")
+
+    before = snapshot_tree(path.parent)
+    write()
+    errors, warnings = check_skill(path)
+    if errors:
+        shutil.rmtree(path.parent, ignore_errors=True)
+        print("error: content is invalid; nothing written", file=sys.stderr)
+        for item in errors:
+            print("  %s" % item, file=sys.stderr)
+        return 2
+    after = snapshot_tree(path.parent)
+    ledger_append("create", name, before, after, args.actor)
+    data = load_usage()
+    rec = record(data, name)
+    rec["created_at"] = rec.get("created_at") or iso(now())
+    rec["first_seen_at"] = rec.get("first_seen_at") or iso(now())
+    rec["created_by"] = args.created_by
+    save_usage(data)
+    for item in warnings:
+        print("warn: %s" % item)
+    print("created %s" % path)
+    return 0
+
+
+def cmd_validate(args):
+    targets = [ROOT / args.name] if args.name else skill_dirs()
+    if not targets:
+        print("error: no skills under %s" % ROOT, file=sys.stderr)
+        return 2
+    failures = 0
+    for directory in targets:
+        path = directory / "SKILL.md"
+        if not path.is_file():
+            print("FAIL %s (no SKILL.md)" % directory.name)
+            failures += 1
+            continue
+        errors, warnings = check_skill(path)
+        if errors:
+            failures += 1
+            print("FAIL %s" % directory.name)
+            for item in errors:
+                print("  error: %s" % item)
+        else:
+            print("ok   %s" % directory.name)
+        for item in warnings:
+            print("  warn: %s" % item)
+    return 1 if failures else 0
+
+
+SKILL_CONTENT_RE = re.compile('<skill_content name="([^"]+)"')
+
+
+def skill_event_name(event):
+    kind = event.get("type")
+    payload = event.get("data") or {}
+    if kind in ("tool/call", "tool/ptc-dispatch"):
+        if payload.get("name") != "skill":
+            return None
+        call_args = payload.get("arguments")
+        if isinstance(call_args, str):
+            try:
+                call_args = json.loads(call_args)
+            except json.JSONDecodeError:
+                return None
+        if not isinstance(call_args, dict):
+            return None
+        name = str(call_args.get("name") or "").strip()
+        return name or None
+    if kind == "user/message":
+        match = SKILL_CONTENT_RE.search(json.dumps(payload, ensure_ascii=False))
+        return match.group(1) if match else None
+    return None
+
+
+def session_files():
+    return sorted(set(SESSIONS.glob("*/session.v4.jsonl.zstd")) | set(SESSIONS.glob("*/*/session.v4.jsonl.zstd")))
+
+
+def iter_events(path):
+    if not shutil.which("zstdcat"):
+        return
+    try:
+        proc = subprocess.Popen(["zstdcat", str(path)], stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True, errors="replace")
+    except OSError:
+        return
+    try:
+        for line in proc.stdout:
+            try:
+                yield json.loads(line)
+            except json.JSONDecodeError:
+                continue
+    finally:
+        proc.wait()
+
+
+def cmd_usage(args):
+    if not shutil.which("zstdcat"):
+        print("error: zstdcat not found (brew install zstd)", file=sys.stderr)
+        return 2
+    files = session_files()
+    data = load_usage()
+    hits = 0
+    for path in files:
+        for event in iter_events(path):
+            if '"name":"skill"' not in json.dumps(event)[:2000] and "skill_content name=" not in json.dumps(event)[:2000]:
+                continue
+            name = skill_event_name(event)
+            if not name:
+                continue
+            rec = record(data, name)
+            rec["use_count"] = int(rec.get("use_count") or 0) + 1
+            used = datetime.fromtimestamp(float(event.get("time", 0)) / 1000, timezone.utc)
+            prev = parse_iso(rec.get("last_used_at"))
+            if prev is None or used > prev:
+                rec["last_used_at"] = iso(used)
+            hits += 1
+    save_usage(data)
+    print("scanned %d session logs, %d skill loads" % (len(files), hits))
+    return 0
+
+
+def cmd_list(args):
+    data = load_usage()
+    rows = []
+    for directory in skill_dirs():
+        rec = data["skills"].get(directory.name, {})
+        used = parse_iso(rec.get("last_used_at"))
+        created = parse_iso(rec.get("created_at")) or datetime.fromtimestamp(
+            directory.stat().st_mtime, timezone.utc)
+        age = (now() - (used or created)).total_seconds() / 86400.0
+        rows.append((directory.name, rec.get("state", "active"), rec.get("created_by", "?"),
+                     int(rec.get("use_count") or 0), iso(used)[:10] if used else "-",
+                     "%.1fd" % age, "pinned" if rec.get("pinned") else ""))
+    if not rows:
+        print("no skills under %s" % ROOT)
+        return 0
+    width = max(len(r[0]) for r in rows)
+    print("%-*s  %-8s  %-8s  %5s  %-10s  %5s  %s" % (width, "name", "state", "origin", "uses", "last used", "age", "flags"))
+    for row in rows:
+        print("%-*s  %-8s  %-8s  %5d  %-10s  %5s  %s" % (width, *row))
+    return 0
+
+
+def guard_actor(name, actor, action):
+    data = load_usage()
+    rec = data["skills"].get(name, {})
+    if action in ("archive", "patch", "edit", "write_file") and rec.get("pinned") and action == "archive":
+        print("error: %s is pinned; unpin first" % name, file=sys.stderr)
+        return False
+    if actor == "agent" and rec.get("created_by") in ("learn", "installed"):
+        print("error: %s was created by %s; the background reviewer may not modify it" % (name, rec.get("created_by")), file=sys.stderr)
+        return False
+    return True
+
+
+def apply_edit(name, new_text, actor, op, expect_sha=None):
+    path = ROOT / name / "SKILL.md"
+    if not path.is_file():
+        print("error: no skill %r" % name, file=sys.stderr)
+        return 2
+    if not guard_actor(name, actor, op):
+        return 2
+    current_sha = sha_file(path)
+    if expect_sha and expect_sha != current_sha:
+        print("error: read-before-write failed: expected %s, file is %s" % (expect_sha, current_sha), file=sys.stderr)
+        return 2
+    original = path.read_bytes()
+    before = snapshot_tree(ROOT / name)
+    path.write_text(new_text, encoding="utf-8")
+    errors, warnings = check_skill(path)
+    if errors:
+        path.write_bytes(original)
+        print("error: written file is invalid; original restored", file=sys.stderr)
+        for item in errors:
+            print("  %s" % item, file=sys.stderr)
+        return 2
+    ledger_append(op, name, before, snapshot_tree(ROOT / name), actor)
+    data = load_usage()
+    rec = record(data, name)
+    rec["patch_count"] = int(rec.get("patch_count") or 0) + 1
+    rec["last_patched_at"] = iso(now())
+    save_usage(data)
+    for item in warnings:
+        print("warn: %s" % item)
+    print("wrote %s" % path)
+    return 0
+
+
+def cmd_manage(args):
+    action = args.action
+    # A model-supplied name reaches this CLI; validate it before any path join so
+    # a name like "../../x" cannot address a directory outside ROOT.
+    if not valid_name(args.name):
+        print("error: invalid name %r (lowercase letters/digits/hyphens, <=64)" % args.name, file=sys.stderr)
+        return 2
+    if action == "create":
+        body = read_input(args.file) if args.file else None
+        return cmd_new(args, body)
+    if action in ("patch", "edit"):
+        path = ROOT / args.name / "SKILL.md"
+        if action == "patch":
+            if not args.old or args.new is None:
+                print("error: patch needs --old and --new", file=sys.stderr)
+                return 2
+            text = path.read_text(encoding="utf-8")
+            count = text.count(args.old)
+            if count != 1:
+                print("error: --old matches %d times; need exactly one" % count, file=sys.stderr)
+                return 2
+            new_text = text.replace(args.old, args.new, 1)
+        else:
+            new_text = read_input(args.file)
+        return apply_edit(args.name, new_text, args.actor, action, args.expect_sha)
+    if action == "write_file":
+        if not args.path or not args.file:
+            print("error: write_file needs --path and --file", file=sys.stderr)
+            return 2
+        relative = Path(args.path)
+        if relative.is_absolute() or ".." in relative.parts or relative.parts[0] not in SUPPORT_DIRS:
+            print("error: --path must be under one of %s" % (SUPPORT_DIRS,), file=sys.stderr)
+            return 2
+        target = ROOT / args.name / relative
+        if not (ROOT / args.name).is_dir():
+            print("error: no skill %r" % args.name, file=sys.stderr)
+            return 2
+        content = read_input(args.file)
+        def mutate():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+        capture_before(args.name, args.actor, "write_file", mutate)
+        print("wrote %s" % target)
+        return 0
+    if action == "archive":
+        if not guard_actor(args.name, args.actor, "archive"):
+            return 2
+        return cmd_archive(argparse.Namespace(name=args.name))
+    print("error: unknown manage action %r" % action, file=sys.stderr)
+    return 2
+
+
+def read_input(file_arg):
+    if file_arg in (None, "-"):
+        return sys.stdin.read()
+    return Path(file_arg).read_text(encoding="utf-8")
+
+
+def archive_dir(name, data):
+    if not valid_name(name):
+        print("error: invalid name %r" % name, file=sys.stderr)
+        return False
+    src = ROOT / name
+    dst = ARCHIVE / name
+    if dst.exists():
+        print("error: %s already in archive" % dst, file=sys.stderr)
+        return False
+    ARCHIVE.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(src), str(dst))
+    rec = record(data, name)
+    rec["state"] = "archived"
+    rec["archived_at"] = iso(now())
+    return True
+
+
+def cmd_curator(args):
+    data = load_usage()
+    stale_days, archive_days = args.stale_days, args.archive_days
+    changes = 0
+    for directory in skill_dirs():
+        name = directory.name
+        rec = record(data, name)
+        if not rec.get("created_at"):
+            rec["created_at"] = iso(datetime.fromtimestamp(directory.stat().st_mtime, timezone.utc))
+        origin = rec.get("created_by") or "manual"
+        if origin != "agent" and not args.include_manual:
+            print("skip   %s (origin %s; use --include-manual)" % (name, origin))
+            continue
+        if rec.get("pinned"):
+            print("skip   %s (pinned)" % name)
+            continue
+        anchor = parse_iso(rec.get("last_used_at")) or parse_iso(rec.get("created_at")) or now()
+        age = (now() - anchor).total_seconds() / 86400.0
+        state = rec.get("state") or "active"
+        if age >= archive_days:
+            print("archive %s (%.1fd idle)" % (name, age))
+            if args.apply:
+                before = snapshot_tree(directory)
+                if archive_dir(name, data):
+                    after = snapshot_tree(directory)
+                    ledger_append("archive", name, before, after, "curator")
+                    changes += 1
+        elif age >= stale_days and state != "stale":
+            print("stale   %s (%.1fd idle)" % (name, age))
+            rec["state"] = "stale"
+            changes += 1
+        elif age < stale_days and state == "stale":
+            print("active  %s (used again)" % name)
+            rec["state"] = "active"
+            changes += 1
+    if args.apply:
+        save_usage(data)
+        print("%d change(s) applied" % changes)
+    else:
+        print("dry-run: pass --apply to make these changes")
+    if args.consolidate:
+        print()
+        print(build_consolidation_prompt())
+    return 0
+
+
+def build_consolidation_prompt():
+    rows = []
+    data = load_usage()
+    for directory in skill_dirs():
+        rec = data["skills"].get(directory.name, {})
+        block, _, _ = split_frontmatter(directory.joinpath("SKILL.md").read_text(encoding="utf-8"))
+        fm, _ = parse_frontmatter(block or "")
+        rows.append("- %s | %s | use=%s | %s" % (
+            directory.name, str(fm.get("description", ""))[:100],
+            rec.get("use_count", 0), rec.get("state", "active")))
+    return "\n".join([
+        "You are the DSH skill curator: an UMBRELLA-BUILDING consolidation pass, not a duplicate finder.",
+        "The library should hold class-level skills, not one-session entries.",
+        "",
+        "Hard rules: never delete (archive only), never touch pinned skills, never trust use_count to judge overlap.",
+        "Three moves per prefix cluster: merge into an existing umbrella, create a new umbrella, or demote depth",
+        "into references/templates/scripts. Every archive must declare absorbed_into.",
+        "",
+        "Candidates:",
+        *rows,
+        "",
+        "Work through skillctl: manage patch/edit/write_file for content, manage archive for absorbed siblings.",
+    ])
+
+
+def cmd_adopt(args):
+    if not valid_name(args.name):
+        print("error: invalid name %r" % args.name, file=sys.stderr)
+        return 2
+    data = load_usage()
+    if not (ROOT / args.name).is_dir():
+        print("error: no skill %r" % args.name, file=sys.stderr)
+        return 2
+    record(data, args.name)["created_by"] = "agent"
+    save_usage(data)
+    print("adopted %s (created_by=agent; clocks untouched)" % args.name)
+    return 0
+
+
+def cmd_pin(args):
+    if not valid_name(args.name):
+        print("error: invalid name %r" % args.name, file=sys.stderr)
+        return 2
+    data = load_usage()
+    if not (ROOT / args.name).is_dir():
+        print("error: no skill %r" % args.name, file=sys.stderr)
+        return 2
+    record(data, args.name)["pinned"] = args.value
+    save_usage(data)
+    print("%s %s" % ("pinned" if args.value else "unpinned", args.name))
+    return 0
+
+
+def cmd_archive(args):
+    if not valid_name(args.name):
+        print("error: invalid name %r" % args.name, file=sys.stderr)
+        return 2
+    data = load_usage()
+    if not (ROOT / args.name).is_dir():
+        print("error: no skill %r" % args.name, file=sys.stderr)
+        return 2
+    if not guard_actor(args.name, "user", "archive"):
+        return 2
+    directory = ROOT / args.name
+    before = snapshot_tree(directory)
+    if archive_dir(args.name, data):
+        save_usage(data)
+        ledger_append("archive", args.name, before, {}, "user")
+        print("archived %s -> %s" % (args.name, ARCHIVE / args.name))
+        return 0
+    return 2
+
+
+def cmd_restore(args):
+    if not valid_name(args.name):
+        print("error: invalid name %r" % args.name, file=sys.stderr)
+        return 2
+    src, dst = ARCHIVE / args.name, ROOT / args.name
+    if not src.is_dir():
+        print("error: %r not in archive" % args.name, file=sys.stderr)
+        return 2
+    if dst.exists():
+        print("error: %s already exists" % dst, file=sys.stderr)
+        return 2
+    shutil.move(str(src), str(dst))
+    data = load_usage()
+    rec = record(data, args.name)
+    rec["state"] = "active"
+    rec["archived_at"] = None
+    save_usage(data)
+    print("restored %s" % dst)
+    return 0
+
+
+def cmd_ledger(args):
+    if not LEDGER.is_file():
+        print("no ledger entries")
+        return 0
+    for line in LEDGER.read_text(encoding="utf-8").splitlines()[-args.limit:]:
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        print("%s  %-11s %-28s %s" % (entry.get("id"), entry.get("op"), entry.get("name"), entry.get("actor")))
+    return 0
+
+
+def cmd_backup(args):
+    BACKUPS.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    target = BACKUPS / stamp
+    target.mkdir(parents=True)
+    archive_path = target / "skills.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as tar:
+        for directory in skill_dirs():
+            tar.add(directory, arcname=directory.name)
+    backups = sorted(p for p in BACKUPS.iterdir() if p.is_dir())
+    for old in backups[:-args.keep]:
+        shutil.rmtree(old)
+    print("backup %s" % archive_path)
+    return 0
+
+
+def session_transcript(session_id, limit=40000):
+    match = [p for p in session_files() if session_id in str(p)]
+    if not match:
+        print("error: no session log matching %r" % session_id, file=sys.stderr)
+        return None
+    chunks = []
+    for event in iter_events(match[0]):
+        kind = event.get("type")
+        payload = event.get("data") or {}
+        text = ""
+        if kind == "user/message":
+            content = payload.get("content") or []
+            text = "".join(part.get("text", "") for part in content if isinstance(part, dict))
+            role = "user"
+        elif kind == "assistant/message":
+            message = payload.get("message") or {}
+            content = message.get("content") or []
+            text = "".join(part.get("text", "") for part in content if isinstance(part, dict))
+            role = "assistant"
+        elif kind == "tool/call":
+            name = str(payload.get("name") or "?")
+            call_args = payload.get("arguments")
+            if isinstance(call_args, str):
+                call_args = " ".join(call_args.split())[:300]
+            text = "[tool call] %s %s" % (name, call_args or "")
+            role = "assistant"
+        else:
+            continue
+        if text.strip():
+            chunks.append("%s: %s" % (role, text.strip()))
+    joined = "\n\n".join(chunks)
+    return joined[-limit:]
+
+
+def review_prompt(transcript, skills):
+    tool_rules = [
+        "6. Do every write through the skill tools; you have no shell and never edit files directly:",
+        "   skill_list                         list the library with origin, state and usage",
+        "   skill_read NAME                    read SKILL.md and its sha256 before editing",
+        "   skill_manage create                name, description, content (body only)",
+        "   skill_manage patch                 name, old, new, expect_sha from skill_read",
+        "   skill_manage write_file            name, path under references/scripts/templates/assets, content",
+        "   skill_manage archive               name (retire an obsolete skill; never delete)",
+    ]
+    closing = "Decide whether anything here is worth saving or fixing. If yes, use the skill tools."
+    return "\n".join([
+        "You are running as DSH's background skill REVIEWER, the equivalent of Hermes'",
+        "post-turn review fork.",
+        "",
+        "Goal: keep a library of CLASS-LEVEL skills. One broad umbrella with labeled sections",
+        "beats five narrow siblings. A skill is the instructions for doing a class of task.",
+        "",
+        "Hard rules:",
+        "1. Procedure first. A pitfall is a generalizable rule plus one clause of why.",
+        "2. Never write PR/issue numbers, dates, ticket IDs, or quoted user text as content.",
+        "3. The same lesson learned twice is ONE rule. Fix wrong statements in place; never",
+        '   append "UPDATE: actually...".',
+        "4. Do NOT capture: failed attempts, environment quirks, negative claims about tools,",
+        "   one-off task narration, or secrets.",
+        "5. Prefer updating an existing skill over creating a new one. Read it before writing.",
+        *tool_rules,
+        "7. Name: lowercase-hyphenated. Description: one sentence, quoted, under 120 chars.",
+        "",
+        "Existing skills:",
+        *(skills or ["- (none)"]),
+        "",
+        "Conversation to review:",
+        transcript or "(no transcript supplied)",
+        "",
+        closing,
+        "If nothing qualifies, say exactly: Nothing to save.",
+    ])
+
+
+def cmd_review(args):
+    session_id = args.session
+    transcript = session_transcript(session_id, args.max_chars) if session_id else ""
+    skills = []
+    for directory in skill_dirs():
+        block, _, _ = split_frontmatter(directory.joinpath("SKILL.md").read_text(encoding="utf-8"))
+        fm, _ = parse_frontmatter(block or "")
+        skills.append("- %s: %s" % (directory.name, str(fm.get("description", ""))[:120]))
+    print(review_prompt(transcript, skills))
+    return 0
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(prog="skillctl", description="Author, manage, review and curate DSH skills.")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("new")
+    p.add_argument("name")
+    p.add_argument("--description", required=True)
+    p.add_argument("--created-by", default="manual", choices=["manual", "agent", "learn", "installed"])
+    p.add_argument("--actor", default="user")
+    p.set_defaults(func=cmd_new, action="create")
+
+    p = sub.add_parser("manage")
+    p.add_argument("action", choices=["create", "patch", "edit", "write_file", "archive"])
+    p.add_argument("name")
+    p.add_argument("--description")
+    p.add_argument("--old")
+    p.add_argument("--new")
+    p.add_argument("--file")
+    p.add_argument("--path")
+    p.add_argument("--expect-sha")
+    p.add_argument("--created-by", default="agent", choices=["manual", "agent", "learn", "installed"])
+    p.add_argument("--actor", default="user")
+    p.set_defaults(func=cmd_manage, created_by="agent")
+
+    p = sub.add_parser("validate")
+    p.add_argument("name", nargs="?")
+    p.set_defaults(func=cmd_validate)
+
+    p = sub.add_parser("list")
+    p.set_defaults(func=cmd_list)
+
+    p = sub.add_parser("usage")
+    p.set_defaults(func=cmd_usage)
+
+    p = sub.add_parser("curator")
+    p.add_argument("--apply", action="store_true")
+    p.add_argument("--stale-days", type=float, default=14)
+    p.add_argument("--archive-days", type=float, default=30)
+    p.add_argument("--include-manual", action="store_true")
+    p.add_argument("--consolidate", action="store_true")
+    p.set_defaults(func=cmd_curator)
+
+    p = sub.add_parser("adopt")
+    p.add_argument("name")
+    p.set_defaults(func=cmd_adopt)
+
+    p = sub.add_parser("pin")
+    p.add_argument("name")
+    p.set_defaults(func=cmd_pin, value=True)
+
+    p = sub.add_parser("unpin")
+    p.add_argument("name")
+    p.set_defaults(func=cmd_pin, value=False)
+
+    p = sub.add_parser("archive")
+    p.add_argument("name")
+    p.set_defaults(func=cmd_archive)
+
+    p = sub.add_parser("restore")
+    p.add_argument("name")
+    p.set_defaults(func=cmd_restore)
+
+    p = sub.add_parser("ledger")
+    p.add_argument("--limit", type=int, default=20)
+    p.set_defaults(func=cmd_ledger)
+
+    p = sub.add_parser("backup")
+    p.add_argument("--keep", type=int, default=2)
+    p.set_defaults(func=cmd_backup)
+
+    p = sub.add_parser("rollback")
+    p.add_argument("entry")
+    p.set_defaults(func=lambda a: rollback_entry(a.entry))
+
+    p = sub.add_parser("review", help="print the reviewer prompt for one session")
+    p.add_argument("--session")
+    p.add_argument("--max-chars", type=int, default=40000)
+    p.set_defaults(func=cmd_review)
+
+    args = parser.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

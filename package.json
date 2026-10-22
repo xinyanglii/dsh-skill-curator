@@ -1,0 +1,66 @@
+{
+  "name": "dsh-skill-curator",
+  "version": "0.2.0",
+  "description": "Hermes-style in-process background skill review and lifecycle curation for DeepSeek Harness, with a read-only dashboard.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Xinyang Li",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xinyanglii/dsh-skill-curator.git"
+  },
+  "homepage": "https://github.com/xinyanglii/dsh-skill-curator#readme",
+  "bugs": {
+    "url": "https://github.com/xinyanglii/dsh-skill-curator/issues"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis",
+    "plugin",
+    "skills",
+    "skill-management",
+    "agent",
+    "self-learning"
+  ],
+  "icon": "./icon.svg",
+  "exports": {
+    ".": "./index.js",
+    "./preset": "./preset.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "dashboard.js",
+    "preset.js",
+    "client.js",
+    "scripts/skillctl",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    }
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js && python3 -m unittest discover -s test -p 'test_*.py' -v",
+    "check": "node --check index.js && node --check dashboard.js && node --check preset.js && node --check client.js && python3 -m py_compile scripts/skillctl"
+  }
+}

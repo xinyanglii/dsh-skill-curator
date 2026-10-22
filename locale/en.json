@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Skill Curator",
+    "description": "Hermes-style background skill learning: reviews finished conversations in a restricted child agent, keeps the skill library current with a deterministic curator, and adds a read-only dashboard panel to the sidebar."
+  }
+}
