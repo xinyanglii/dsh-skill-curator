@@ -51,34 +51,17 @@ window.__ModuleLoader__.load({
       sectionLearning: 'Recent learning',
       sectionActivity: 'Last 14 days',
       sectionConfig: 'Configuration',
-      cfgPlugin: 'Plugin',
-      cfgReview: 'Review',
       cfgCurator: 'Curator',
-      cfgConsolidation: 'Consolidation',
-      cfgPaths: 'Paths',
       cfgAutoReview: 'Auto-review',
       cfgThreshold: 'Threshold',
-      cfgReviewPreset: 'Reviewer preset',
-      cfgReviewTimeout: 'Review timeout',
-      cfgTranscriptLimit: 'Transcript limit',
-      cfgFailed: 'Failed reviews',
-      cfgCuratorInterval: 'Curator interval',
-      cfgStaleArchive: 'Stale / archive',
       cfgConsolidate: 'Consolidation',
-      cfgConsolidatePreset: 'Consolidation preset',
-      cfgConsolidateTimeout: 'Consolidation timeout',
-      cfgBackupKeep: 'Backups kept',
-      cfgLastConsolidation: 'Last consolidation',
-      cfgLibrary: 'Library',
-      cfgStateLog: 'State and log',
-      cfgSkillctl: 'skillctl',
+      cfgIterations: 'iterations',
       cfgSave: 'Save',
       cfgSaving: 'Saving…',
       cfgSaved: 'Saved',
       cfgSaveError: 'Save failed:',
       cfgOn: 'On',
       cfgOff: 'Off',
-      cfgNever: 'Never',
       sectionAdvanced: 'Technical details',
       filterAll: 'All',
       filterActive: 'Active',
@@ -150,34 +133,17 @@ window.__ModuleLoader__.load({
       sectionLearning: '最近学习',
       sectionActivity: '最近 14 天',
       sectionConfig: '配置',
-      cfgPlugin: '插件',
-      cfgReview: '复盘',
       cfgCurator: '技能整理',
-      cfgConsolidation: '合并',
-      cfgPaths: '路径',
       cfgAutoReview: '自动复盘',
       cfgThreshold: '阈值',
-      cfgReviewPreset: '复审 preset',
-      cfgReviewTimeout: '复审超时',
-      cfgTranscriptLimit: '转录上限',
-      cfgFailed: '失败次数',
-      cfgCuratorInterval: '整理间隔',
-      cfgStaleArchive: '闲置 / 归档',
       cfgConsolidate: '合并 pass',
-      cfgConsolidatePreset: '合并 preset',
-      cfgConsolidateTimeout: '合并超时',
-      cfgBackupKeep: '保留备份',
-      cfgLastConsolidation: '上次合并',
-      cfgLibrary: '技能库',
-      cfgStateLog: '状态与日志',
-      cfgSkillctl: 'skillctl',
+      cfgIterations: '步',
       cfgSave: '保存',
       cfgSaving: '保存中…',
       cfgSaved: '已保存',
       cfgSaveError: '保存失败：',
       cfgOn: '开启',
       cfgOff: '关闭',
-      cfgNever: '从未',
       sectionAdvanced: '技术细节',
       filterAll: '全部',
       filterActive: '活跃',
@@ -315,6 +281,8 @@ window.__ModuleLoader__.load({
 .sc-config-group-wide{grid-column:1/-1}
 .sc-config-title{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--dsw-alias-label-secondary);margin-bottom:6px}
 .sc-config-list{display:grid;grid-template-columns:150px minmax(0,1fr);gap:5px 14px;margin:0;font-size:12px}
+.sc-config-compact{grid-template-columns:180px minmax(0,1fr);gap:10px 14px;align-items:center}
+.sc-config-unit{color:var(--dsw-alias-label-secondary);margin-left:6px;font-size:11px}
 .sc-config-list dt{color:var(--dsw-alias-label-secondary)}
 .sc-config-list dd{margin:0;overflow-wrap:anywhere}
 .sc-input{width:120px;box-sizing:border-box;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l1);border-radius:7px;color:var(--dsw-alias-label-primary);font-size:12px;padding:3px 8px;font-family:inherit}
@@ -633,8 +601,6 @@ window.__ModuleLoader__.load({
     function Configuration(props) {
       const { data, t, reload } = props
       const config = data.config || {}
-      const runtime = data.runtime || {}
-      const stats = data.stats || {}
       const signature = JSON.stringify(config)
       const [draft, setDraft] = useState(() => configDraft(config))
       const [dirty, setDirty] = useState(false)
@@ -693,50 +659,19 @@ window.__ModuleLoader__.load({
         onChange: (event) => set(key)(event.target.value),
       })
 
-      const lastConsolidation = runtime.lastConsolidateAt
-        ? `${relative(runtime.lastConsolidateAt)} ago${runtime.lastConsolidateSummary ? ` · ${runtime.lastConsolidateSummary}` : ''}`
-        : t('cfgNever')
-
-      const group = (title, pairs, wide = false) =>
-        h('div', { className: `sc-config-group${wide ? ' sc-config-group-wide' : ''}`, key: title },
-          h('div', { className: 'sc-config-title' }, title),
-          h('dl', { className: 'sc-config-list' },
-            pairs.flatMap(([label, control, mono], index) => [
-              h('dt', { key: `l-${index}` }, label),
-              h('dd', { key: `v-${index}`, className: mono ? 'sc-mono' : undefined }, control),
-            ])))
+      const row = (label, control, index) => [
+        h('dt', { key: `l-${index}` }, label),
+        h('dd', { key: `v-${index}` }, control),
+      ]
 
       return h('div', { className: 'sc-card sc-config-card' },
-        h('div', { className: 'sc-config' },
-          group(t('cfgReview'), [
-            [t('cfgPlugin'), config.enabled !== false ? t('cfgOn') : t('cfgOff')],
-            [t('cfgAutoReview'), toggle('reviewEnabled')],
-            [t('cfgThreshold'), number('threshold', 1, 1000)],
-            [t('cfgReviewPreset'), `${config.reviewPreset || 'skill-review'} (${config.reviewProvider || 'spawn'})`, true],
-            [t('cfgReviewTimeout'), number('reviewTimeout', 1, 1440)],
-            [t('cfgTranscriptLimit'), number('transcriptLimit', 4000, 200000, 1000)],
-            [t('cfgFailed'), String(stats.reviewFailed || 0)],
-          ]),
-          group(t('cfgCurator'), [
-            [t('cfgCurator'), toggle('curatorEnabled')],
-            [t('cfgCuratorInterval'), number('curatorEveryDays', 0.01, 365, 0.5)],
-            [t('cfgStaleArchive'), h('span', { className: 'sc-inline' },
-              number('staleDays', 1, 3650),
-              h('span', { className: 'sc-inline-sep' }, '/'),
-              number('archiveDays', 1, 3650))],
-          ]),
-          group(t('cfgConsolidation'), [
-            [t('cfgConsolidate'), toggle('consolidateEnabled')],
-            [t('cfgConsolidatePreset'), config.consolidatePreset || 'skill-consolidate', true],
-            [t('cfgConsolidateTimeout'), number('consolidateTimeout', 1, 1440)],
-            [t('cfgBackupKeep'), number('consolidateBackupKeep', 0, 10)],
-            [t('cfgLastConsolidation'), lastConsolidation],
-          ]),
-          group(t('cfgPaths'), [
-            [t('cfgLibrary'), config.skillsRoot || '', true],
-            [t('cfgStateLog'), `${config.stateDir || ''} · ${config.logPath || ''}`, true],
-            [t('cfgSkillctl'), config.skillctl || '', true],
-          ], true)),
+        h('dl', { className: 'sc-config-list sc-config-compact' },
+          row(t('cfgAutoReview'), toggle('reviewEnabled'), 0),
+          row(t('cfgThreshold'), h('span', { className: 'sc-inline' },
+            number('threshold', 1, 1000),
+            h('span', { className: 'sc-config-unit' }, t('cfgIterations'))), 1),
+          row(t('cfgCurator'), toggle('curatorEnabled'), 2),
+          row(t('cfgConsolidate'), toggle('consolidateEnabled'), 3)),
         h('div', { className: 'sc-config-actions' },
           h('button', {
             type: 'button',

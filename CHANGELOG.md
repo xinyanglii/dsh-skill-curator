@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1 — 2026-10-22
+
+- Simplified the editable configuration form to four controls (auto-review,
+  review threshold, curator, consolidation) with a Save action; every other
+  setting remains in the profile patch. Removed the redundant groups and the
+  read-only preset/path duplication.
+
 ## 0.4.0 — 2026-10-22
 
 - The dashboard Configuration section is now an editable form: auto-review, review
