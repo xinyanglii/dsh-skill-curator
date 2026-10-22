@@ -1244,10 +1244,18 @@ def list_snapshots():
             manifest = json.loads((snapshot / "manifest.json").read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             pass
+        skills = manifest.get("skills") or []
+        if not skills:
+            try:
+                with tarfile.open(snapshot / "skills.tar.gz", "r:gz") as tar:
+                    skills = sorted({member.name.split("/")[0] for member in tar.getmembers() if "/" in member.name})
+            except (OSError, tarfile.TarError):
+                skills = []
+        created = manifest.get("created_at") or iso(datetime.fromtimestamp(snapshot.stat().st_mtime, timezone.utc))
         print("%-20s  %-19s  %-6d  %s" % (
             snapshot.name,
-            str(manifest.get("created_at", ""))[:19],
-            len(manifest.get("skills") or []),
+            str(created)[:19],
+            len(skills),
             manifest.get("reason", ""),
         ))
     return 0
