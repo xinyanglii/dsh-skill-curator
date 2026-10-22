@@ -23,6 +23,12 @@
         curatorEveryDays: 7
         staleDays: 14
         archiveDays: 30
+        # Optional Hermes-style umbrella-building pass. Off by default: it costs an
+        # extra model call and rewrites skill content, so it is opt-in.
+        consolidateEnabled: false
+        consolidatePreset: skill-consolidate
+        consolidateTimeoutMs: 1800000
+        consolidateBackupKeep: 2
         selfTestOnFirstRun: true
 
     - id: preset-skill-review
@@ -47,3 +53,29 @@
             config:
               skillsRoot: !!js process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:os').homedir(), '.dsh', 'skills')
               python: !!js process.env.DSH_CURATOR_PYTHON || 'python3'
+
+    - id: preset-skill-consolidate
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: skill-consolidate
+        name: Skill Consolidation
+        description: Internal one-shot umbrella-building pass over the local skill library, started by the curator. Not meant for user work.
+        order: 91
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: >-
+                You are DSH's background skill curator. You run the umbrella-building
+                consolidation pass over the local skill library: you merge overlapping
+                class-level skills, demote narrow depth into references/templates/scripts,
+                and archive absorbed skills only with an explicit absorbed_into umbrella.
+                Work only through the skill tools.
+              complete: true
+              includeRuntimeContext: false
+          - id: skill-consolidate-tools
+            name: 'dsh-skill-curator/preset'
+            config:
+              skillsRoot: !!js process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:os').homedir(), '.dsh', 'skills')
+              python: !!js process.env.DSH_CURATOR_PYTHON || 'python3'
+              consolidationMode: true

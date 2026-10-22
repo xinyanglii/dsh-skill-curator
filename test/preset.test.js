@@ -19,6 +19,8 @@ function fakeSkillctl(root) {
       "import fs from 'node:fs'",
       'const log = process.env.FAKE_SKILLCTL_LOG',
       "if (log) fs.appendFileSync(log, JSON.stringify(process.argv.slice(2)) + '\\n')",
+      'const envLog = process.env.FAKE_SKILLCTL_ENV_LOG',
+      "if (envLog) fs.appendFileSync(envLog, String(process.env.DSH_CURATOR_CONSOLIDATION || '') + '\\n')",
       "process.stdout.write('ok\\n')",
       'process.exit(0)',
       '',
@@ -55,14 +57,14 @@ function fakeContext() {
   }
 }
 
-function makeHarness() {
+function makeHarness(extraConfig = {}) {
   const root = tempRoot()
   const skillsRoot = path.join(root, 'skills')
   fs.mkdirSync(skillsRoot, { recursive: true })
   const log = path.join(root, 'argv.log')
   process.env.FAKE_SKILLCTL_LOG = log
   const fake = fakeContext()
-  const config = { skillsRoot, python: process.execPath, skillctl: fakeSkillctl(root), timeoutMs: 10000 }
+  const config = { skillsRoot, python: process.execPath, skillctl: fakeSkillctl(root), timeoutMs: 10000, ...extraConfig }
   const realSetTimeout = globalThis.setTimeout
   globalThis.setTimeout = (fn, _ms) => realSetTimeout(fn, 0)
   try {
@@ -70,7 +72,7 @@ function makeHarness() {
   } finally {
     globalThis.setTimeout = realSetTimeout
   }
-  return { fake, config, log, skillsRoot }
+  return { fake, config, log, skillsRoot, root }
 }
 
 function argvLines(log) {
@@ -153,4 +155,38 @@ test('skill_list and skill_read work against the local library', async () => {
   assert.match(await listTool.execute({}, exec()), /ok/)
 
   await assert.rejects(readTool.execute({ name: '../escape' }), /invalid skill name/)
+})
+
+
+test('consolidationMode sets the skillctl environment flag', async () => {
+  const harness = makeHarness({ consolidationMode: true })
+  const envLog = path.join(harness.root, 'env.log')
+  process.env.FAKE_SKILLCTL_ENV_LOG = envLog
+  try {
+    const tool = harness.fake.tools.get('skill_manage')
+    await tool.execute(
+      { action: 'create', name: 'demo-skill', description: 'A demo skill', content: '## When to Use\n\nx\n' },
+      exec(),
+    )
+  } finally {
+    delete process.env.FAKE_SKILLCTL_ENV_LOG
+  }
+  assert.equal(fs.readFileSync(envLog, 'utf8').trim(), '1')
+})
+
+test('skill_manage archive forwards absorbed_into', async () => {
+  const { fake, log } = makeHarness()
+  const tool = fake.tools.get('skill_manage')
+  assert.ok(tool.parameters.properties.absorbed_into)
+  await tool.execute({ action: 'archive', name: 'demo', absorbed_into: 'umbrella' }, exec())
+  const [args] = argvLines(log)
+  assert.ok(args.includes('--absorbed-into=umbrella'))
+  assert.ok(args.includes('--actor=agent'))
+})
+
+test('skill_manage archive omits absorbed_into when not provided', async () => {
+  const { fake, log } = makeHarness()
+  await fake.tools.get('skill_manage').execute({ action: 'archive', name: 'demo' }, exec())
+  const [args] = argvLines(log)
+  assert.ok(!args.some((arg) => arg.startsWith('--absorbed-into=')))
 })

@@ -24,6 +24,10 @@ deterministic lifecycle curator, and ships a read-only dashboard panel.
 - **Lifecycle curator.** Once per `curatorEveryDays` it runs `skillctl curator --apply`:
   `active → stale` (14 days unused) → `archived` (30 days unused). Archive-only and
   reversible.
+- **Optional consolidation pass.** Off by default. When enabled, the same run then starts
+  one restricted child that merges overlapping curator-managed skills into umbrellas,
+  demotes narrow depth into support files, and archives absorbed siblings with an explicit
+  `absorbed_into` mapping.
 - **Usage telemetry.** Skill loads are folded into `<skillsRoot>/.dsh-usage.json`, the
   same file the curator reads.
 - **Dashboard.** A sidebar panel (`Skill Curator`) backed by two loopback-only GET
@@ -128,6 +132,10 @@ Override any value from the profile's `cordis.patch.yml` by row id (`skill-curat
 | `curatorEveryDays` | `7` | Minimum interval between curator runs. |
 | `staleDays` | `14` | Unused days before a skill becomes stale. |
 | `archiveDays` | `30` | Unused days before a stale skill is archived. |
+| `consolidateEnabled` | `false` | Run the optional LLM umbrella-building pass after the deterministic curator. |
+| `consolidatePreset` | `skill-consolidate` | Preset mounted for the consolidation child. |
+| `consolidateTimeoutMs` | `1800000` | Hard timeout for one consolidation run. |
+| `consolidateBackupKeep` | `2` | Whole-tree snapshots kept before consolidation runs. |
 | `selfTestOnFirstRun` | `true` | Run the one-shot canary on first activation. |
 | `maxSessions` | `200` | Session-counter records kept in state. |
 | `logMaxBytes` | `2097152` | Rotate `plugin.log` after this size. |
@@ -166,6 +174,30 @@ These are write-path limits. The only truncation in the plugin is the review **i
 transcript (`maxTranscriptChars`, default 40,000 characters), which is a prompt budget, not
 a skill-content limit. Skill injection/read behavior belongs to DSH itself.
 
+## Consolidation pass (optional)
+
+A library can fragment into many narrow siblings that no single review can see. The
+consolidation pass is Hermes's answer: one extra background child that reads the whole
+curator-managed library and builds umbrellas.
+
+- **Off by default.** Enabling it costs one model call per curator run and rewrites
+  skill content, so it is an explicit opt-in.
+- Runs after the deterministic stale/archive transitions, at most once per
+  `curatorEveryDays`.
+- Candidates are **curator-managed** skills (`created_by: agent`), excluding pinned
+  skills; user-authored/installed skills are never touched.
+- The child gets the same restricted tool surface (`skill_list`, `skill_read`,
+  `skill_manage`) and a dedicated prompt. It may merge into an existing umbrella, create a
+  new one, or demote depth into `references/`/`templates/`/`scripts/`.
+- Every archive must declare `absorbed_into=<existing umbrella>`; skillctl validates the
+  umbrella exists and records the mapping in the ledger and usage record. Without it the
+  archive is refused.
+- A whole-tree snapshot is taken first (`skillctl backup --keep N`); the run writes
+  `run.json` and `REPORT.md` under `<stateDir>/curator-runs/<timestamp>/` with the
+  consolidated/pruned classification, added skills, state transitions and the child's
+  final summary. Archives remain recoverable with `skillctl restore <name>`.
+- Unlike Hermes, DSH has no cron-job skill references, so there is no cron rewrite step.
+
 ## Dashboard
 
 - Sidebar entry **Skill Curator** → full-width main panel.
@@ -194,10 +226,12 @@ npm test
 
 - `node --test test/*.test.js` covers the manifest, bundle patch, dashboard routes
   (200/400/403/405, traversal, dispose), preset tool registration and argument
-  validation against a fake `skillctl`, and the browser-half registration.
+  validation against a fake `skillctl`, the consolidation report builder, and the
+  browser-half registration.
 - `python3 -m unittest discover -s test -p 'test_*.py'` covers the vendored `skillctl`:
-  create, patch with SHA checks, confined support files, archive/restore, validation, and
-  the reviewer prompt builder.
+  create, patch with SHA checks, confined support files, archive/restore, validation,
+  consolidation candidates/prompt, `absorbed_into` guards, `list --json`, and the
+  reviewer prompt builder.
 - CI runs both on Node 20/22 with Python 3.11.
 
 ## Compatibility notes
@@ -207,6 +241,9 @@ npm test
   implemented here; long-term memory belongs to your memory plugin.
 - Cron/scheduled sessions are not skipped. Only root sessions are counted; review
   children are excluded.
+- The consolidation pass follows Hermes's guard shape (curator-managed only, pinned
+  skipped, archive-only with a validated umbrella, pre-run snapshot) but not its cron
+  reference rewrite, because DSH schedules do not carry structured skill references.
 - Adding or removing `dsh.client` metadata on an already-loaded package specifier needs
   an App restart. Code-only changes to an installed bundle can be reloaded by removing
   and reinstalling the bundle.

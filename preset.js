@@ -26,6 +26,9 @@ const DEFAULTS = {
   skillctl: path.join(PACKAGE_ROOT, 'scripts', 'skillctl'),
   python: process.env.DSH_CURATOR_PYTHON || 'python3',
   timeoutMs: 60000,
+  // When true the tools run in the curator consolidation pass: skillctl then
+  // requires absorbed_into on archive and refuses writes to user-owned skills.
+  consolidationMode: false,
 }
 
 function textBlock(text) {
@@ -108,6 +111,7 @@ function runCli(cfg, args, input, signal) {
           ...process.env,
           PATH: process.env.PATH ?? '',
           DSH_SKILLS_ROOT: cfg.skillsRoot,
+          ...(cfg.consolidationMode ? { DSH_CURATOR_CONSOLIDATION: '1' } : {}),
         },
         stdio: ['pipe', 'pipe', 'pipe'],
       })
@@ -243,7 +247,7 @@ export function apply(ctx, config = {}) {
   const skillManage = {
     name: 'skill_manage',
     description:
-      'Write the skill library through skillctl, the validated authoring CLI. Actions: create (name, description, content = body only, no frontmatter), patch (name, old, new, expect_sha from skill_read), write_file (name, path under references/scripts/templates/assets, content), archive (name; never deletes). Every action is validated, ledgered, and attributed; a rejected write leaves the library unchanged.',
+      'Write the skill library through skillctl, the validated authoring CLI. Actions: create (name, description, content = body only, no frontmatter), patch (name, old, new, expect_sha from skill_read), write_file (name, path under references/scripts/templates/assets, content), archive (name; never deletes; in the consolidation pass it also requires absorbed_into naming the umbrella that absorbed it). Every action is validated, ledgered, and attributed; a rejected write leaves the library unchanged.',
     parameters: {
       type: 'object',
       properties: {
@@ -269,6 +273,10 @@ export function apply(ctx, config = {}) {
         path: {
           type: 'string',
           description: 'write_file only: relative path under references/, scripts/, templates/ or assets/.',
+        },
+        absorbed_into: {
+          type: 'string',
+          description: 'archive only, required in the consolidation pass: the umbrella skill that absorbed this one. The umbrella must already exist.',
         },
       },
       required: ['action', 'name'],
@@ -339,7 +347,10 @@ export function apply(ctx, config = {}) {
           exec.signal,
         )
       } else if (action === 'archive') {
-        result = await runCli(cfg, ['manage', 'archive', skillName, '--actor=agent'], null, exec.signal)
+        const absorbedInto = typeof args?.absorbed_into === 'string' ? args.absorbed_into.trim() : ''
+        const archiveArgs = ['manage', 'archive', skillName, '--actor=agent']
+        if (absorbedInto) archiveArgs.push(`--absorbed-into=${absorbedInto}`)
+        result = await runCli(cfg, archiveArgs, null, exec.signal)
       } else {
         throw new Error(`unknown action "${action}"; use create, patch, write_file or archive`)
       }

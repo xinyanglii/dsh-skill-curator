@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
 import os
 import pathlib
 import subprocess
@@ -27,10 +28,12 @@ class SkillctlTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_cli(self, *args, stdin=None):
+    def run_cli(self, *args, stdin=None, extra_env=None):
         env = os.environ.copy()
         env["DSH_SKILLS_ROOT"] = str(self.root)
         env["DSH_SESSIONS"] = str(self.sessions)
+        if extra_env:
+            env.update(extra_env)
         return subprocess.run(
             [sys.executable, str(SCRIPT), *args],
             input=stdin,
@@ -186,6 +189,90 @@ class SkillctlTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("limit", result.stderr)
         self.assertFalse((self.root / "demo" / "references" / "big.md").exists())
+
+    def make_skill(self, name, created_by="agent"):
+        result = self.run_cli(
+            "manage", "create", name,
+            "--description=%s skill" % name,
+            "--created-by=" + created_by,
+            "--actor=agent",
+            "--file=-",
+            stdin="## When to Use\n\nUse it.\n\n## Verification\n\nCheck it.\n",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_consolidation_prompt_lists_only_curator_managed_candidates(self):
+        self.make_skill("agent-skill")
+        self.make_skill("manual-skill", created_by="manual")
+        result = self.run_cli("consolidate")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("agent-skill", result.stdout)
+        self.assertNotIn("manual-skill", result.stdout)
+        self.assertIn("absorbed_into", result.stdout)
+        self.assertIn("consolidations:", result.stdout)
+        self.assertIn("Nothing to consolidate", result.stdout)
+
+    def test_consolidation_prompt_skips_pinned_skills(self):
+        self.make_skill("agent-skill")
+        self.assertEqual(self.run_cli("pin", "agent-skill").returncode, 0)
+        result = self.run_cli("consolidate")
+        self.assertIn("No curator-managed skills", result.stdout)
+
+    def test_archive_with_absorbed_into_records_the_umbrella(self):
+        self.make_skill("umbrella")
+        self.make_skill("sibling")
+        result = self.run_cli("manage", "archive", "sibling", "--absorbed-into=umbrella", "--actor=agent")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("absorbed into umbrella", result.stdout)
+        self.assertFalse((self.root / "sibling").exists())
+        self.assertTrue((self.root / "umbrella").exists())
+        ledger = [json.loads(line) for line in (self.root / ".curator_ledger.jsonl").read_text().splitlines() if line.strip()]
+        archive = [entry for entry in ledger if entry.get("op") == "archive"][-1]
+        self.assertEqual(archive.get("absorbed_into"), "umbrella")
+        usage = json.loads((self.root / ".dsh-usage.json").read_text())
+        self.assertEqual(usage["skills"]["sibling"].get("absorbed_into"), "umbrella")
+
+    def test_consolidation_mode_requires_absorbed_into(self):
+        self.make_skill("sibling")
+        result = self.run_cli(
+            "manage", "archive", "sibling", "--actor=agent",
+            extra_env={"DSH_CURATOR_CONSOLIDATION": "1"},
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("absorbed-into", result.stderr)
+        self.assertTrue((self.root / "sibling").exists())
+
+    def test_consolidation_mode_refuses_user_owned_skills(self):
+        self.make_skill("manual-skill", created_by="manual")
+        result = self.run_cli(
+            "manage", "patch", "manual-skill", "--old=Use it.", "--new=Use it now.",
+            "--expect-sha=" + hashlib.sha256((self.root / "manual-skill" / "SKILL.md").read_bytes()).hexdigest(),
+            "--actor=agent",
+            extra_env={"DSH_CURATOR_CONSOLIDATION": "1"},
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not curator-managed", result.stderr)
+
+    def test_consolidation_mode_refuses_pinned_skills(self):
+        self.make_skill("pinned-skill")
+        self.assertEqual(self.run_cli("pin", "pinned-skill").returncode, 0)
+        result = self.run_cli(
+            "manage", "archive", "pinned-skill", "--absorbed-into=umbrella", "--actor=agent",
+            extra_env={"DSH_CURATOR_CONSOLIDATION": "1"},
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("pinned", result.stderr)
+
+    def test_list_json_reports_library_metadata(self):
+        self.make_skill("agent-skill")
+        result = self.run_cli("list", "--json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rows = json.loads(result.stdout)
+        row = next(item for item in rows if item["name"] == "agent-skill")
+        self.assertEqual(row["created_by"], "agent")
+        self.assertEqual(row["state"], "active")
+        self.assertGreater(row["bytes"], 0)
+        self.assertIn("description", row)
 
     def test_validate_accepts_a_generated_skill(self):
         self.create_demo()

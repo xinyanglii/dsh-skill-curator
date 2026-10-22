@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.0 — 2026-10-22
+
+- Optional Hermes-style consolidation pass (`consolidateEnabled`, off by default):
+  after the deterministic curator, a restricted child merges overlapping
+  curator-managed skills into umbrellas and archives absorbed siblings.
+- `skillctl consolidate` prints the umbrella-building prompt; `skillctl list --json`
+  exposes the library snapshot used for before/after reporting.
+- `skill_manage archive` accepts `absorbed_into`; in consolidation mode skillctl
+  requires it, validates the umbrella exists, refuses pinned/user-owned skills, and
+  records the mapping in the ledger and usage record.
+- Pre-run `skillctl backup` snapshot, per-run `run.json` + `REPORT.md` under
+  `<stateDir>/curator-runs/`, and consolidated/pruned classification from the ledger.
+- New `skill-consolidate` preset; tests for prompt candidates, absorbed_into guards,
+  list JSON, preset environment and report building.
+
 ## 0.2.1 — 2026-10-22
 
 - Hard write limits, aligned with Hermes and returned as tool errors (never truncation):

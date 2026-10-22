@@ -16,6 +16,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { buildConsolidationReport, writeConsolidationReport } from './consolidate.js'
 import { registerDashboard } from './dashboard.js'
 
 const PACKAGE_ROOT = path.dirname(fileURLToPath(import.meta.url))
@@ -51,6 +52,12 @@ const DEFAULTS = {
   curatorEveryDays: 7,
   staleDays: 14,
   archiveDays: 30,
+  // Hermes-style umbrella-building pass. Off by default: it costs an extra
+  // model call and rewrites content, so enabling it is an explicit choice.
+  consolidateEnabled: false,
+  consolidatePreset: 'skill-consolidate',
+  consolidateTimeoutMs: 30 * 60 * 1000,
+  consolidateBackupKeep: 2,
   // One canary child on first activation proves the preset, the tools and the
   // path to skillctl before the first real review depends on them.
   selfTestOnFirstRun: true,
@@ -204,6 +211,8 @@ export function apply(ctx, config = {}) {
   state.reviewTotal = Number(state.reviewTotal) || 0
   state.reviewFailed = Number(state.reviewFailed) || 0
   state.lastReviewAt = Number(state.lastReviewAt) || 0
+  state.lastConsolidateAt = Number(state.lastConsolidateAt) || 0
+  state.lastConsolidateSummary = String(state.lastConsolidateSummary || '')
 
   // session id -> { iterations, lastTurnAt, lastReviewAt, reviews }. `iterations`
   // counts model steps (Hermes's `_iters_since_skill` unit), not individual tool calls.
@@ -234,6 +243,7 @@ export function apply(ctx, config = {}) {
   let disposed = false
   let activeController = null
   let activeActivation = null
+  let activeCuratorController = null
 
   function log(record) {
     try {
@@ -272,6 +282,8 @@ export function apply(ctx, config = {}) {
         reviewTotal: Number(state.reviewTotal) || 0,
         reviewFailed: Number(state.reviewFailed) || 0,
         lastReviewAt: Number(state.lastReviewAt) || 0,
+        lastConsolidateAt: Number(state.lastConsolidateAt) || 0,
+        lastConsolidateSummary: String(state.lastConsolidateSummary || ''),
         counterSemantics: state.counterSemantics || 'iterations',
         sessions: Object.fromEntries(counters),
       })
@@ -385,11 +397,11 @@ export function apply(ctx, config = {}) {
     return { route: undefined, source: 'provider-default' }
   }
 
-  function reviewRequest(promptText, agent) {
+  function reviewRequest(promptText, agent, preset = cfg.reviewPreset) {
     const request = {
       prompt: [{ type: 'text', text: promptText }],
       parent: agent,
-      agentPreset: cfg.reviewPreset,
+      agentPreset: preset,
     }
     const resolved = resolveRoute(agent)
     if (resolved.route) request.agentOptions = resolved.route
@@ -433,7 +445,7 @@ export function apply(ctx, config = {}) {
   }
 
   function drainQueue() {
-    if (disposed || reviewing) return
+    if (disposed || reviewing || curatorRunning) return
     while (reviewQueue.length > 0) {
       const sessionId = reviewQueue.shift()
       const record = counters.get(sessionId)
@@ -663,12 +675,181 @@ export function apply(ctx, config = {}) {
 
   // ── curator (deterministic lifecycle) ─────────────────────────────────────
 
+  async function listLibrary() {
+    const result = await runProcess(
+      cfg.python,
+      [cfg.skillctl, 'list', '--json'],
+      { env: reviewEnv(), timeoutMs: 60000, signal: activeCuratorController?.signal },
+    )
+    if (result.code !== 0) {
+      throw new Error(`skillctl list failed: ${(result.stderr || result.error || '').slice(-500)}`)
+    }
+    const text = (result.stdout || '').trim()
+    return text ? JSON.parse(text) : []
+  }
+
+  function readLedgerSince(startedAt) {
+    const file = path.join(cfg.skillsRoot, '.curator_ledger.jsonl')
+    let text
+    try {
+      text = fs.readFileSync(file, 'utf8')
+    } catch {
+      return []
+    }
+    const rows = []
+    for (const line of text.split('\n')) {
+      if (!line.trim()) continue
+      try {
+        const entry = JSON.parse(line)
+        const ts = Date.parse(entry.ts || '')
+        if (Number.isFinite(ts) && ts >= startedAt - 2000) rows.push(entry)
+      } catch {
+        /* partial trailing line */
+      }
+    }
+    return rows
+  }
+
+  // Optional Hermes-style consolidation pass: deterministic curator first, then
+  // one restricted child that merges overlapping skills into umbrellas. Off by
+  // default; every archive must declare absorbed_into (enforced by skillctl).
+  async function runConsolidation(startedAt, autoSummary) {
+    if (!cfg.consolidateEnabled || disposed) return
+    const agent = mostRecentRootAgent()
+    if (!agent) {
+      log({ event: 'consolidate.skipped', reason: 'no live root session to parent the child' })
+      return
+    }
+
+    // Best-effort whole-tree snapshot before the only pass that rewrites content.
+    let backup = null
+    try {
+      const result = await runProcess(
+        cfg.python,
+        [cfg.skillctl, 'backup', '--keep', String(cfg.consolidateBackupKeep)],
+        { env: reviewEnv(), timeoutMs: 180000 },
+      )
+      backup = (result.stdout || '').trim().split('\n').filter(Boolean).pop() || null
+      if (result.code === 0) log({ event: 'consolidate.backup', path: backup })
+      else log({ event: 'consolidate.backup-failed', code: result.code, stderr: (result.stderr || '').slice(-500) })
+    } catch (error) {
+      log({ event: 'consolidate.backup-failed', error: errorText(error) })
+    }
+
+    const before = await listLibrary()
+    const promptResult = await runProcess(
+      cfg.python,
+      [cfg.skillctl, 'consolidate'],
+      { env: reviewEnv(), timeoutMs: 60000 },
+    )
+    if (promptResult.code !== 0) {
+      throw new Error(`consolidation prompt failed: ${(promptResult.stderr || promptResult.error || '').slice(-500)}`)
+    }
+    const prompt = (promptResult.stdout || '').trim()
+    if (!prompt || prompt.startsWith('No curator-managed skills')) {
+      log({ event: 'consolidate.skipped', reason: 'no curator-managed candidates' })
+      return
+    }
+
+    const planning = reviewRequest(prompt, agent, cfg.consolidatePreset)
+    log({
+      event: 'consolidate.start',
+      candidates: before.length,
+      backup,
+      routeSource: planning.routeSource,
+      route: planning.route,
+    })
+    const controller = new AbortController()
+    activeController = controller
+    activeCuratorController = controller
+    let result
+    try {
+      const activation = await ctx.subagents.startActivation({
+        provider: cfg.reviewProvider,
+        label: 'skill consolidation',
+        request: planning.request,
+        signal: controller.signal,
+        delivery: 'caller',
+      })
+      activeActivation = activation
+      reviewChildren.add(idOf(activation.childId))
+      log({ event: 'consolidate.activated', child: idOf(activation.childId) })
+      const timer = ctx.timeout(() => {
+        try {
+          controller.abort()
+        } catch {
+          /* already aborted */
+        }
+      }, cfg.consolidateTimeoutMs)
+      try {
+        result = await withTimeout(
+          activation.result,
+          cfg.consolidateTimeoutMs + 5000,
+          'consolidation result did not settle',
+        )
+      } finally {
+        try {
+          timer()
+        } catch {
+          /* timer already disposed */
+        }
+        try {
+          await activation.dispose()
+        } catch {
+          /* already settled */
+        }
+        activeActivation = null
+      }
+    } finally {
+      activeCuratorController = null
+      activeController = null
+    }
+
+    const output = textOfBlocks(result?.output)
+    const stopReason = result?.stopReason || 'unknown'
+    const after = await listLibrary()
+    const report = buildConsolidationReport({
+      startedAt,
+      finishedAt: Date.now(),
+      before,
+      after,
+      ledgerEntries: readLedgerSince(startedAt),
+      output,
+      autoSummary,
+      error: stopReason === 'completed' ? null : `child stopped with ${stopReason}`,
+    })
+    let reportPath = null
+    try {
+      const written = writeConsolidationReport(cfg.stateDir, report)
+      reportPath = written.reportPath
+    } catch (error) {
+      log({ event: 'consolidate.report-failed', error: errorText(error) })
+    }
+    state.lastConsolidateAt = Date.now()
+    state.lastConsolidateSummary = report.counts
+      ? `${report.counts.consolidated} consolidated, ${report.counts.pruned} pruned, ${report.counts.added} added`
+      : ''
+    persistState()
+    log({
+      event: 'consolidate.finished',
+      stopReason,
+      candidates: before.length,
+      after: report.afterTotal,
+      consolidated: report.counts.consolidated,
+      pruned: report.counts.pruned,
+      added: report.counts.added,
+      report: reportPath,
+      output: output.length > 2000 ? `${output.slice(0, 2000)}\n…[truncated]` : output,
+    })
+  }
+
   function maybeRunCurator() {
     if (!cfg.curatorEnabled || curatorRunning || disposed || reviewing) return
     const now = Date.now()
     if (now - (Number(state.lastCuratorAt) || 0) < cfg.curatorEveryDays * DAY_MS) return
     curatorRunning = true
     const controller = new AbortController()
+    activeCuratorController = controller
     runProcess(
       cfg.python,
       [
@@ -682,21 +863,36 @@ export function apply(ctx, config = {}) {
       ],
       { env: reviewEnv(), timeoutMs: 120000, signal: controller.signal },
     )
-      .then((result) => {
+      .then(async (result) => {
         log({
           event: 'curator.finished',
           code: result.code,
           stdout: (result.stdout || '').slice(-3000),
           stderr: (result.stderr || '').slice(-1000),
         })
-        if (result.code === 0) {
-          state.lastCuratorAt = now
-          persistState()
+        if (result.code !== 0) return
+        const autoSummary = (result.stdout || '').trim().split('\n').filter(Boolean).pop() || ''
+        state.lastCuratorAt = now
+        persistState()
+        if (cfg.consolidateEnabled) {
+          try {
+            await runConsolidation(now, autoSummary)
+          } catch (error) {
+            log({ event: 'consolidate.failed', error: errorText(error) })
+          }
         }
       })
       .catch((error) => log({ event: 'curator.failed', error: errorText(error) }))
       .finally(() => {
+        activeCuratorController = null
         curatorRunning = false
+        if (!disposed) {
+          try {
+            ctx.timeout(() => drainQueue(), 1000)
+          } catch {
+            /* timer already disposed */
+          }
+        }
       })
   }
 
@@ -767,6 +963,11 @@ export function apply(ctx, config = {}) {
       disposed = true
       try {
         activeController?.abort()
+      } catch {
+        /* already aborted */
+      }
+      try {
+        activeCuratorController?.abort()
       } catch {
         /* already aborted */
       }

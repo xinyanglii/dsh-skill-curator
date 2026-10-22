@@ -252,7 +252,7 @@ def store_blob(data):
     return digest
 
 
-def ledger_append(op, name, before, after, actor="user"):
+def ledger_append(op, name, before, after, actor="user", extra=None):
     entry = {
         "id": "%s-%s" % (int(time.time() * 1000), sha_bytes((str(time.time()) + name + op).encode())[:8]),
         "ts": iso(now()),
@@ -262,6 +262,8 @@ def ledger_append(op, name, before, after, actor="user"):
         "before": before,
         "after": after,
     }
+    if extra:
+        entry.update({k: v for k, v in extra.items() if v is not None})
     LEDGER.parent.mkdir(parents=True, exist_ok=True)
     with LEDGER.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -472,6 +474,30 @@ def cmd_usage(args):
 
 def cmd_list(args):
     data = load_usage()
+    if getattr(args, "json", False):
+        out = []
+        for directory in skill_dirs():
+            rec = data["skills"].get(directory.name, {})
+            try:
+                block, _, _ = split_frontmatter(directory.joinpath("SKILL.md").read_text(encoding="utf-8"))
+                fm, _ = parse_frontmatter(block or "")
+                description = str(fm.get("description", ""))
+            except OSError:
+                description = ""
+            out.append({
+                "name": directory.name,
+                "description": description,
+                "state": rec.get("state", "active"),
+                "created_by": rec.get("created_by", "manual"),
+                "pinned": bool(rec.get("pinned")),
+                "use_count": int(rec.get("use_count") or 0),
+                "patch_count": int(rec.get("patch_count") or 0),
+                "last_used_at": rec.get("last_used_at"),
+                "created_at": rec.get("created_at"),
+                "bytes": directory.joinpath("SKILL.md").stat().st_size,
+            })
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0
     rows = []
     for directory in skill_dirs():
         rec = data["skills"].get(directory.name, {})
@@ -492,11 +518,27 @@ def cmd_list(args):
     return 0
 
 
+WRITE_ACTIONS = ("archive", "patch", "edit", "write_file")
+
+
+def is_curator_managed(rec):
+    """Only agent-created skills are curator-managed; manual/installed skills are user-owned."""
+    return isinstance(rec, dict) and rec.get("created_by") == "agent"
+
+
+def in_consolidation_mode():
+    return os.environ.get("DSH_CURATOR_CONSOLIDATION") == "1"
+
+
 def guard_actor(name, actor, action):
     data = load_usage()
     rec = data["skills"].get(name, {})
-    if action in ("archive", "patch", "edit", "write_file") and rec.get("pinned") and action == "archive":
+    if action in WRITE_ACTIONS and rec.get("pinned"):
         print("error: %s is pinned; unpin first" % name, file=sys.stderr)
+        return False
+    if in_consolidation_mode() and action != "create" and not is_curator_managed(rec):
+        print("error: consolidation pass may not modify %r (not curator-managed; created_by=%r)"
+              % (name, rec.get("created_by")), file=sys.stderr)
         return False
     if actor == "agent" and rec.get("created_by") in ("learn", "installed"):
         print("error: %s was created by %s; the background reviewer may not modify it" % (name, rec.get("created_by")), file=sys.stderr)
@@ -593,7 +635,8 @@ def cmd_manage(args):
     if action == "archive":
         if not guard_actor(args.name, args.actor, "archive"):
             return 2
-        return cmd_archive(argparse.Namespace(name=args.name))
+        return cmd_archive(argparse.Namespace(
+            name=args.name, absorbed_into=getattr(args, "absorbed_into", None), actor=args.actor))
     print("error: unknown manage action %r" % action, file=sys.stderr)
     return 2
 
@@ -661,35 +704,110 @@ def cmd_curator(args):
         print("%d change(s) applied" % changes)
     else:
         print("dry-run: pass --apply to make these changes")
-    if args.consolidate:
-        print()
-        print(build_consolidation_prompt())
     return 0
 
 
-def build_consolidation_prompt():
-    rows = []
+CONSOLIDATION_REPORT_FORMAT = '''```yaml
+consolidations:
+  - from: old-skill
+    into: umbrella-skill
+    reason: one line
+prunings: []
+```'''
+
+
+def consolidation_candidates():
+    """Curator-managed, unpinned, active/stale skills; the only set the consolidation pass may touch."""
     data = load_usage()
+    rows = []
     for directory in skill_dirs():
         rec = data["skills"].get(directory.name, {})
-        block, _, _ = split_frontmatter(directory.joinpath("SKILL.md").read_text(encoding="utf-8"))
+        if not is_curator_managed(rec) or rec.get("pinned"):
+            continue
+        try:
+            text = directory.joinpath("SKILL.md").read_text(encoding="utf-8")
+        except OSError:
+            continue
+        block, _, _ = split_frontmatter(text)
         fm, _ = parse_frontmatter(block or "")
-        rows.append("- %s | %s | use=%s | %s" % (
-            directory.name, str(fm.get("description", ""))[:100],
-            rec.get("use_count", 0), rec.get("state", "active")))
-    return "\n".join([
-        "You are the DSH skill curator: an UMBRELLA-BUILDING consolidation pass, not a duplicate finder.",
-        "The library should hold class-level skills, not one-session entries.",
-        "",
-        "Hard rules: never delete (archive only), never touch pinned skills, never trust use_count to judge overlap.",
-        "Three moves per prefix cluster: merge into an existing umbrella, create a new umbrella, or demote depth",
-        "into references/templates/scripts. Every archive must declare absorbed_into.",
-        "",
-        "Candidates:",
-        *rows,
-        "",
-        "Work through skillctl: manage patch/edit/write_file for content, manage archive for absorbed siblings.",
+        rows.append({
+            "name": directory.name,
+            "description": str(fm.get("description", ""))[:160],
+            "state": rec.get("state", "active"),
+            "use_count": int(rec.get("use_count") or 0),
+            "patch_count": int(rec.get("patch_count") or 0),
+            "last_used_at": rec.get("last_used_at") or "never",
+            "bytes": len(text.encode("utf-8")),
+        })
+    return sorted(rows, key=lambda row: row["name"])
+
+
+def build_consolidation_prompt():
+    rows = consolidation_candidates()
+    if not rows:
+        return "No curator-managed skills to consolidate."
+    candidate_list = "\n".join([
+        "Curator-managed skills (%d):" % len(rows),
+        *[
+            "- %(name)s | %(description)s | state=%(state)s | use=%(use_count)s | patches=%(patch_count)s | last_used=%(last_used_at)s | bytes=%(bytes)s"
+            % row
+            for row in rows
+        ],
     ])
+    return "\n".join([
+        "You are running as DSH's background skill CURATOR. This is an",
+        "UMBRELLA-BUILDING consolidation pass, not a passive audit and not a",
+        "duplicate-finder.",
+        "",
+        "The goal is a LIBRARY OF CLASS-LEVEL INSTRUCTIONS. A collection of hundreds of",
+        "narrow skills where each captures one session's specific bug is a FAILURE of the",
+        "library, not a feature. One broad umbrella with labeled subsections beats five",
+        "narrow siblings for discoverability.",
+        "",
+        "The right shape: a class-level SKILL.md with the always-on rules, and a SMALL set",
+        "of topical depth under references/, templates/ and scripts/. Consolidation means",
+        "DISTILLING: absorbed content becomes rules (imperative + one clause of why), the",
+        "same lesson stated twice becomes one rule, incident narration/dates/quoted chatter",
+        "are dropped. Moving a file unchanged under references/ is filing, not consolidating.",
+        "A SKILL.md body over ~24k bytes is a consolidation target on its own.",
+        "",
+        "Hard rules:",
+        "1. Only touch curator-managed skills in the candidate list below. Never touch",
+        "   pinned, manually authored, installed or archived skills.",
+        "2. Never delete. Archiving is the maximum action, and an archive MUST declare the",
+        "   umbrella with absorbed_into=<existing umbrella> (skill_manage archive).",
+        "3. Do not use usage counters as a reason to skip or to prune; judge overlap on",
+        "   CONTENT. A never-used recent skill may simply not have had its trigger yet.",
+        "4. Do not reject consolidation because each skill has a distinct trigger. The bar",
+        "   is: would a human maintainer write this as N skills or one skill with N labeled",
+        "   subsections?",
+        "",
+        "How to work:",
+        "- Scan the list for prefix/domain clusters (2+ members).",
+        "- For each cluster choose one move:",
+        "  a. merge into an existing umbrella (patch it, add a labeled section per sibling,",
+        "     then archive the siblings with absorbed_into=<umbrella>);",
+        "  b. create a new umbrella (skill_manage create), then archive the absorbed",
+        "     siblings with absorbed_into=<new umbrella>);",
+        "  c. demote narrow depth into the umbrella's references/, templates/ or scripts/,",
+        "     then archive the sibling with absorbed_into=<umbrella>.",
+        "- Iterate once over the remaining set, then stop. Prefer a few good merges over",
+        "  rewriting the whole library.",
+        "",
+        "Report: end your final answer with exactly one fenced yaml block in this shape",
+        "(empty lists if you changed nothing):",
+        CONSOLIDATION_REPORT_FORMAT,
+        "",
+        "Work only through the skill tools (skill_list, skill_read, skill_manage). If nothing",
+        "qualifies, report empty lists and say: Nothing to consolidate.",
+        "",
+        candidate_list,
+    ])
+
+
+def cmd_consolidate(args):
+    print(build_consolidation_prompt())
+    return 0
 
 
 def cmd_adopt(args):
@@ -724,18 +842,41 @@ def cmd_archive(args):
     if not valid_name(args.name):
         print("error: invalid name %r" % args.name, file=sys.stderr)
         return 2
+    absorbed_into = (getattr(args, "absorbed_into", None) or "").strip()
+    actor = getattr(args, "actor", "user") or "user"
+    if in_consolidation_mode() and not absorbed_into:
+        print("error: the consolidation pass may only archive a skill it has absorbed into an "
+              "umbrella; pass --absorbed-into=<umbrella>", file=sys.stderr)
+        return 2
+    if absorbed_into:
+        if not valid_name(absorbed_into):
+            print("error: invalid absorbed_into %r" % absorbed_into, file=sys.stderr)
+            return 2
+        if absorbed_into == args.name:
+            print("error: absorbed_into cannot equal the skill being archived", file=sys.stderr)
+            return 2
+        if not (ROOT / absorbed_into).is_dir():
+            print("error: absorbed_into=%r does not exist; create the umbrella first" % absorbed_into,
+                  file=sys.stderr)
+            return 2
     data = load_usage()
     if not (ROOT / args.name).is_dir():
         print("error: no skill %r" % args.name, file=sys.stderr)
         return 2
-    if not guard_actor(args.name, "user", "archive"):
+    if not guard_actor(args.name, actor, "archive"):
         return 2
     directory = ROOT / args.name
     before = snapshot_tree(directory)
     if archive_dir(args.name, data):
+        rec = record(data, args.name)
+        if absorbed_into:
+            rec["absorbed_into"] = absorbed_into
+            rec["consolidated_at"] = iso(now())
         save_usage(data)
-        ledger_append("archive", args.name, before, {}, "user")
-        print("archived %s -> %s" % (args.name, ARCHIVE / args.name))
+        ledger_append("archive", args.name, before, {}, actor,
+                      {"absorbed_into": absorbed_into or None})
+        suffix = (" (absorbed into %s)" % absorbed_into) if absorbed_into else ""
+        print("archived %s -> %s%s" % (args.name, ARCHIVE / args.name, suffix))
         return 0
     return 2
 
@@ -896,6 +1037,7 @@ def main(argv):
     p.add_argument("--file")
     p.add_argument("--path")
     p.add_argument("--expect-sha")
+    p.add_argument("--absorbed-into", default=None)
     p.add_argument("--created-by", default="agent", choices=["manual", "agent", "learn", "installed"])
     p.add_argument("--actor", default="user")
     p.set_defaults(func=cmd_manage, created_by="agent")
@@ -905,6 +1047,7 @@ def main(argv):
     p.set_defaults(func=cmd_validate)
 
     p = sub.add_parser("list")
+    p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_list)
 
     p = sub.add_parser("usage")
@@ -915,8 +1058,10 @@ def main(argv):
     p.add_argument("--stale-days", type=float, default=14)
     p.add_argument("--archive-days", type=float, default=30)
     p.add_argument("--include-manual", action="store_true")
-    p.add_argument("--consolidate", action="store_true")
     p.set_defaults(func=cmd_curator)
+
+    p = sub.add_parser("consolidate", help="print the curator consolidation prompt")
+    p.set_defaults(func=cmd_consolidate)
 
     p = sub.add_parser("adopt")
     p.add_argument("name")
@@ -932,6 +1077,8 @@ def main(argv):
 
     p = sub.add_parser("archive")
     p.add_argument("name")
+    p.add_argument("--absorbed-into", default=None)
+    p.add_argument("--actor", default="user")
     p.set_defaults(func=cmd_archive)
 
     p = sub.add_parser("restore")
