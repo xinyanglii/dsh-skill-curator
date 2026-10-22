@@ -673,6 +673,14 @@ export function apply(ctx, config = {}) {
   }
   selfTestProbe()
 
+  // A manual consolidation request should survive an App restart or a bundle
+  // reload; consume it on activation as well as at turn end.
+  try {
+    ctx.timeout(() => maybeRunRequestedConsolidation(), 5000)
+  } catch {
+    /* timer unavailable */
+  }
+
   // ── curator (deterministic lifecycle) ─────────────────────────────────────
 
   async function listLibrary() {

@@ -6,6 +6,8 @@
   successful save still showed `Save failed: reload is not a function`. Saves now
   show Saved and refresh only when the reload function exists; regression check
   added.
+- A pending `skillctl curator --request-consolidation` marker is also consumed on
+  plugin activation, so a manual request survives a restart or bundle reload.
 
 ## 0.3.0 — 2026-10-22
 
