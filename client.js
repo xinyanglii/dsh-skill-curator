@@ -72,9 +72,10 @@ window.__ModuleLoader__.load({
       cfgLibrary: 'Library',
       cfgStateLog: 'State and log',
       cfgSkillctl: 'skillctl',
-      cfgChars: '{n} chars',
-      cfgIterations: '{n} iterations',
-      cfgTimeoutMinutes: '{n}m',
+      cfgSave: 'Save',
+      cfgSaving: 'Saving…',
+      cfgSaved: 'Saved',
+      cfgSaveError: 'Save failed:',
       cfgOn: 'On',
       cfgOff: 'Off',
       cfgNever: 'Never',
@@ -170,9 +171,10 @@ window.__ModuleLoader__.load({
       cfgLibrary: '技能库',
       cfgStateLog: '状态与日志',
       cfgSkillctl: 'skillctl',
-      cfgChars: '{n} 字符',
-      cfgIterations: '{n} 步',
-      cfgTimeoutMinutes: '{n} 分钟',
+      cfgSave: '保存',
+      cfgSaving: '保存中…',
+      cfgSaved: '已保存',
+      cfgSaveError: '保存失败：',
       cfgOn: '开启',
       cfgOff: '关闭',
       cfgNever: '从未',
@@ -315,6 +317,15 @@ window.__ModuleLoader__.load({
 .sc-config-list{display:grid;grid-template-columns:150px minmax(0,1fr);gap:5px 14px;margin:0;font-size:12px}
 .sc-config-list dt{color:var(--dsw-alias-label-secondary)}
 .sc-config-list dd{margin:0;overflow-wrap:anywhere}
+.sc-input{width:120px;box-sizing:border-box;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l1);border-radius:7px;color:var(--dsw-alias-label-primary);font-size:12px;padding:3px 8px;font-family:inherit}
+.sc-input:focus{outline:none;border-color:var(--dsw-alias-border-l2)}
+.sc-toggle{min-width:58px;border:1px solid var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-label-secondary);border-radius:999px;padding:2px 10px;font-size:11px;cursor:pointer;font-family:inherit}
+.sc-toggle-on{color:var(--dsw-alias-state-success-primary);border-color:var(--dsw-alias-state-success-primary)}
+.sc-inline{display:inline-flex;align-items:center;gap:6px}
+.sc-inline-sep{color:var(--dsw-alias-label-secondary)}
+.sc-config-actions{display:flex;align-items:center;gap:12px;margin-top:16px;padding-top:14px;border-top:1px solid var(--dsw-alias-border-l1)}
+.sc-status-ok{font-size:12px;color:var(--dsw-alias-state-success-primary)}
+.sc-status-error{font-size:12px;color:var(--dsw-alias-state-error-primary)}
 .sc-advanced{border-top:1px solid var(--dsw-alias-border-l1);padding-top:14px}
 .sc-advanced summary{cursor:pointer;font-size:12px;color:var(--dsw-alias-label-secondary);list-style:none}
 .sc-advanced summary::-webkit-details-marker{display:none}
@@ -579,52 +590,161 @@ window.__ModuleLoader__.load({
           h('span', null, h('i', { style: { background: COLORS.success } }), t('kpiChanges'))))
     }
 
+    function configDraft(config) {
+      return {
+        enabled: config.enabled !== false,
+        reviewEnabled: config.reviewEnabled !== false,
+        curatorEnabled: config.curatorEnabled !== false,
+        consolidateEnabled: config.consolidateEnabled === true,
+        threshold: String(config.threshold ?? 10),
+        reviewPreset: config.reviewPreset || 'skill-review',
+        reviewProvider: config.reviewProvider || 'spawn',
+        reviewTimeout: String(Math.max(1, Math.round((Number(config.reviewTimeoutMs) || 900000) / 60000))),
+        transcriptLimit: String(Number(config.maxTranscriptChars) || 40000),
+        curatorEveryDays: String(config.curatorEveryDays ?? 7),
+        staleDays: String(config.staleDays ?? 14),
+        archiveDays: String(config.archiveDays ?? 30),
+        consolidatePreset: config.consolidatePreset || 'skill-consolidate',
+        consolidateTimeout: String(Math.max(1, Math.round((Number(config.consolidateTimeoutMs) || 1800000) / 60000))),
+        consolidateBackupKeep: String(config.consolidateBackupKeep ?? 2),
+      }
+    }
+
+    function configPayload(draft) {
+      return {
+        enabled: draft.enabled,
+        reviewEnabled: draft.reviewEnabled,
+        curatorEnabled: draft.curatorEnabled,
+        consolidateEnabled: draft.consolidateEnabled,
+        nudgeAfterToolIters: Number(draft.threshold),
+        reviewPreset: draft.reviewPreset.trim(),
+        reviewProvider: draft.reviewProvider.trim(),
+        reviewTimeoutMs: Math.round(Number(draft.reviewTimeout) * 60000),
+        maxTranscriptChars: Number(draft.transcriptLimit),
+        curatorEveryDays: Number(draft.curatorEveryDays),
+        staleDays: Number(draft.staleDays),
+        archiveDays: Number(draft.archiveDays),
+        consolidatePreset: draft.consolidatePreset.trim(),
+        consolidateTimeoutMs: Math.round(Number(draft.consolidateTimeout) * 60000),
+        consolidateBackupKeep: Number(draft.consolidateBackupKeep),
+      }
+    }
+
     function Configuration(props) {
-      const { data, t } = props
+      const { data, t, reload } = props
       const config = data.config || {}
       const runtime = data.runtime || {}
       const stats = data.stats || {}
-      const onOff = (value) => (value ? t('cfgOn') : t('cfgOff'))
-      const minutes = (ms) => fill(t('cfgTimeoutMinutes'), { n: Math.max(1, Math.round((Number(ms) || 0) / 60000)) })
+      const signature = JSON.stringify(config)
+      const [draft, setDraft] = useState(() => configDraft(config))
+      const [dirty, setDirty] = useState(false)
+      const [saving, setSaving] = useState(false)
+      const [status, setStatus] = useState('')
+      const [failed, setFailed] = useState(false)
+
+      useEffect(() => {
+        if (!dirty) setDraft(configDraft(config))
+      }, [signature, dirty])
+
+      const set = (key) => (value) => {
+        setDraft((previous) => ({ ...previous, [key]: value }))
+        setDirty(true)
+        setStatus('')
+        setFailed(false)
+      }
+
+      const save = async () => {
+        setSaving(true)
+        setStatus('')
+        setFailed(false)
+        try {
+          const response = await fetch(`${API}/config`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', accept: 'application/json' },
+            body: JSON.stringify(configPayload(draft)),
+          })
+          const payload = await response.json().catch(() => ({}))
+          if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`)
+          setDirty(false)
+          setStatus(t('cfgSaved'))
+          reload()
+        } catch (error) {
+          setFailed(true)
+          setStatus(`${t('cfgSaveError')} ${String(error && error.message ? error.message : error)}`)
+        } finally {
+          setSaving(false)
+        }
+      }
+
+      const toggle = (key) => h('button', {
+        type: 'button',
+        className: `sc-toggle${draft[key] ? ' sc-toggle-on' : ''}`,
+        'aria-pressed': draft[key],
+        onClick: () => set(key)(!draft[key]),
+      }, draft[key] ? t('cfgOn') : t('cfgOff'))
+
+      const number = (key, min, max, step = 1) => h('input', {
+        type: 'number',
+        className: 'sc-input',
+        value: draft[key],
+        min,
+        max,
+        step,
+        onChange: (event) => set(key)(event.target.value),
+      })
+
+      const lastConsolidation = runtime.lastConsolidateAt
+        ? `${relative(runtime.lastConsolidateAt)} ago${runtime.lastConsolidateSummary ? ` · ${runtime.lastConsolidateSummary}` : ''}`
+        : t('cfgNever')
+
       const group = (title, pairs, wide = false) =>
         h('div', { className: `sc-config-group${wide ? ' sc-config-group-wide' : ''}`, key: title },
           h('div', { className: 'sc-config-title' }, title),
           h('dl', { className: 'sc-config-list' },
-            pairs.flatMap(([label, value, mono], index) => [
+            pairs.flatMap(([label, control, mono], index) => [
               h('dt', { key: `l-${index}` }, label),
-              h('dd', { key: `v-${index}`, className: mono ? 'sc-mono' : undefined }, value),
+              h('dd', { key: `v-${index}`, className: mono ? 'sc-mono' : undefined }, control),
             ])))
-      const lastConsolidation = runtime.lastConsolidateAt
-        ? `${relative(runtime.lastConsolidateAt)} ago${runtime.lastConsolidateSummary ? ` · ${runtime.lastConsolidateSummary}` : ''}`
-        : t('cfgNever')
+
       return h('div', { className: 'sc-card sc-config-card' },
         h('div', { className: 'sc-config' },
           group(t('cfgReview'), [
-            [t('cfgPlugin'), onOff(config.enabled !== false)],
-            [t('cfgAutoReview'), onOff(config.reviewEnabled !== false)],
-            [t('cfgThreshold'), fill(t('cfgIterations'), { n: config.threshold || 10 })],
+            [t('cfgPlugin'), config.enabled !== false ? t('cfgOn') : t('cfgOff')],
+            [t('cfgAutoReview'), toggle('reviewEnabled')],
+            [t('cfgThreshold'), number('threshold', 1, 1000)],
             [t('cfgReviewPreset'), `${config.reviewPreset || 'skill-review'} (${config.reviewProvider || 'spawn'})`, true],
-            [t('cfgReviewTimeout'), minutes(config.reviewTimeoutMs)],
-            [t('cfgTranscriptLimit'), fill(t('cfgChars'), { n: Number(config.maxTranscriptChars) || 40000 })],
+            [t('cfgReviewTimeout'), number('reviewTimeout', 1, 1440)],
+            [t('cfgTranscriptLimit'), number('transcriptLimit', 4000, 200000, 1000)],
             [t('cfgFailed'), String(stats.reviewFailed || 0)],
           ]),
           group(t('cfgCurator'), [
-            [t('cfgCurator'), onOff(config.curatorEnabled !== false)],
-            [t('cfgCuratorInterval'), fill(t('kpiCuratorSub'), { n: config.curatorEveryDays || 7 })],
-            [t('cfgStaleArchive'), `${config.staleDays || 14}d / ${config.archiveDays || 30}d`],
+            [t('cfgCurator'), toggle('curatorEnabled')],
+            [t('cfgCuratorInterval'), number('curatorEveryDays', 0.01, 365, 0.5)],
+            [t('cfgStaleArchive'), h('span', { className: 'sc-inline' },
+              number('staleDays', 1, 3650),
+              h('span', { className: 'sc-inline-sep' }, '/'),
+              number('archiveDays', 1, 3650))],
           ]),
           group(t('cfgConsolidation'), [
-            [t('cfgConsolidate'), onOff(config.consolidateEnabled === true)],
+            [t('cfgConsolidate'), toggle('consolidateEnabled')],
             [t('cfgConsolidatePreset'), config.consolidatePreset || 'skill-consolidate', true],
-            [t('cfgConsolidateTimeout'), minutes(config.consolidateTimeoutMs)],
-            [t('cfgBackupKeep'), String(config.consolidateBackupKeep || 2)],
+            [t('cfgConsolidateTimeout'), number('consolidateTimeout', 1, 1440)],
+            [t('cfgBackupKeep'), number('consolidateBackupKeep', 0, 10)],
             [t('cfgLastConsolidation'), lastConsolidation],
           ]),
           group(t('cfgPaths'), [
             [t('cfgLibrary'), config.skillsRoot || '', true],
             [t('cfgStateLog'), `${config.stateDir || ''} · ${config.logPath || ''}`, true],
             [t('cfgSkillctl'), config.skillctl || '', true],
-          ], true)))
+          ], true)),
+        h('div', { className: 'sc-config-actions' },
+          h('button', {
+            type: 'button',
+            className: 'sc-btn',
+            disabled: !dirty || saving,
+            onClick: save,
+          }, saving ? t('cfgSaving') : t('cfgSave')),
+          status ? h('span', { className: failed ? 'sc-status-error' : 'sc-status-ok' }, status) : null))
     }
 
     function Advanced(props) {

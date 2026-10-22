@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.0 — 2026-10-22
+
+- The dashboard Configuration section is now an editable form: auto-review, review
+  threshold/timeout/transcript limit, curator interval and stale/archive days,
+  consolidation state/timeout/backups.
+- New `POST /skill-curator/api/config` (loopback-only, JSON-only, fixed schema) persists
+  changes through the Host `configEditor` into the active profile patch and applies them
+  live. Plugin/preset/provider/path values are read-only from the browser.
+- Tests for the config route: validation, unknown keys, POST-only/JSON-only/loopback,
+  missing config editor, and the persisted patch.
+
 ## 0.3.2 — 2026-10-22
 
 - Dashboard: a visible Configuration section with the live review/curator/

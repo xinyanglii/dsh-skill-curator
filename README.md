@@ -204,10 +204,13 @@ curator-managed library and builds umbrellas.
 ## Dashboard
 
 - Sidebar entry **Skill Curator** → full-width main panel.
-- `GET /skill-curator/api/state` and `GET /skill-curator/api/skill?name=<name>`.
-- GET-only, loopback-only (`127.0.0.1`, `::1`), skill names validated, nothing outside
-  `<skillsRoot>/<name>/SKILL.md`.
-- Read-only: the browser half has no write path.
+- `GET /skill-curator/api/state`, `GET /skill-curator/api/skill?name=<name>`, and
+  `POST /skill-curator/api/config` for the editable settings.
+- All routes are loopback-only; the GET routes expose nothing outside
+  `<skillsRoot>/<name>/SKILL.md`. The POST route accepts JSON only, validates every key
+  against a fixed schema, and writes through the Host `configEditor` into the active
+  profile patch (live reload); paths, python, skillctl and plugin/preset identities are
+  not writable from the browser.
 
 ## Security model
 

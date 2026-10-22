@@ -21,6 +21,72 @@ const SUPPORT_DIRS = ['references', 'scripts', 'templates', 'assets']
 const SKILL_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/
 const STATE_ROUTE = '/skill-curator/api/state'
 const SKILL_ROUTE = '/skill-curator/api/skill'
+const CONFIG_ROUTE = '/skill-curator/api/config'
+const MAX_BODY_BYTES = 64 * 1024
+
+// Editable config surface. Paths, python and skillctl stay read-only: they are
+// machine bindings, not preferences.
+const CONFIG_SCHEMA = {
+  enabled: { type: 'boolean' },
+  reviewEnabled: { type: 'boolean' },
+  curatorEnabled: { type: 'boolean' },
+  consolidateEnabled: { type: 'boolean' },
+  nudgeAfterToolIters: { type: 'integer', min: 1, max: 1000 },
+  reviewTimeoutMs: { type: 'integer', min: 60_000, max: 86_400_000 },
+  maxTranscriptChars: { type: 'integer', min: 4_000, max: 200_000 },
+  curatorEveryDays: { type: 'number', min: 0.01, max: 365 },
+  staleDays: { type: 'number', min: 1, max: 3650 },
+  archiveDays: { type: 'number', min: 1, max: 3650 },
+  consolidateTimeoutMs: { type: 'integer', min: 60_000, max: 86_400_000 },
+  consolidateBackupKeep: { type: 'integer', min: 0, max: 10 },
+  reviewPreset: { type: 'string', pattern: /^[a-z0-9][a-z0-9-]{0,63}$/ },
+  reviewProvider: { type: 'string', pattern: /^[a-z0-9][a-z0-9-]{0,63}$/ },
+  consolidatePreset: { type: 'string', pattern: /^[a-z0-9][a-z0-9-]{0,63}$/ },
+}
+
+function validateConfigPatch(patch, current) {
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return { error: 'body must be a JSON object' }
+  const keys = Object.keys(patch)
+  if (keys.length === 0) return { error: 'empty configuration patch' }
+  const normalized = {}
+  for (const key of keys) {
+    const rule = CONFIG_SCHEMA[key]
+    if (!rule) return { error: `unknown or read-only config key "${key}"` }
+    const value = patch[key]
+    if (rule.type === 'boolean') {
+      if (typeof value !== 'boolean') return { error: `${key} must be a boolean` }
+    } else if (rule.type === 'integer' || rule.type === 'number') {
+      if (typeof value !== 'number' || !Number.isFinite(value)) return { error: `${key} must be a finite number` }
+      if (rule.type === 'integer' && !Number.isInteger(value)) return { error: `${key} must be an integer` }
+      if (value < rule.min || value > rule.max) return { error: `${key} must be between ${rule.min} and ${rule.max}` }
+    } else if (rule.type === 'string') {
+      if (typeof value !== 'string' || !rule.pattern.test(value)) return { error: `${key} has an invalid value` }
+    }
+    normalized[key] = value
+  }
+  const merged = { ...(current || {}), ...normalized }
+  const stale = Number(merged.staleDays) || 14
+  const archive = Number(merged.archiveDays) || 30
+  if (archive < stale) return { error: 'archiveDays must be greater than or equal to staleDays' }
+  return { normalized, merged }
+}
+
+function readRequestBody(req) {
+  return new Promise((resolve, reject) => {
+    let size = 0
+    const chunks = []
+    req.on('data', (chunk) => {
+      size += chunk.length
+      if (size > MAX_BODY_BYTES) {
+        reject(new Error('request body too large'))
+        return
+      }
+      chunks.push(chunk)
+    })
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
+    req.on('error', reject)
+  })
+}
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
 
 function readText(file) {
@@ -484,6 +550,13 @@ export function registerDashboard(ctx, options) {
     return { registered: false, routes: [], dispose() {} }
   }
 
+  let configEditor = null
+  try {
+    configEditor = ctx.get ? ctx.get('configEditor') : null
+  } catch {
+    configEditor = null
+  }
+
   const handlers = [
     [STATE_ROUTE, (req, res) => {
       if (!isLoopbackRequest(req)) return sendJson(res, 403, { error: 'loopback only' })
@@ -492,6 +565,40 @@ export function registerDashboard(ctx, options) {
         sendJson(res, 200, buildStatePayload())
       } catch (error) {
         sendJson(res, 500, { error: String(error && error.message ? error.message : error) })
+      }
+    }],
+    [CONFIG_ROUTE, async (req, res) => {
+      if (!isLoopbackRequest(req)) return sendJson(res, 403, { error: 'loopback only' })
+      if (req.method !== 'POST') return sendJson(res, 405, { error: 'POST only' })
+      const contentType = String(req.headers?.['content-type'] || '')
+      if (!contentType.toLowerCase().startsWith('application/json')) {
+        return sendJson(res, 415, { error: 'content-type must be application/json' })
+      }
+      if (!configEditor || typeof configEditor.edit !== 'function' || typeof configEditor.entries !== 'function') {
+        return sendJson(res, 501, { error: 'config editor is not available in this profile' })
+      }
+      let patch
+      try {
+        const raw = await readRequestBody(req)
+        patch = JSON.parse(raw)
+      } catch (error) {
+        return sendJson(res, 400, { error: String(error && error.message ? error.message : error) })
+      }
+      let entry
+      try {
+        entry = configEditor.entries().find((candidate) => candidate?.options?.id === 'skill-curator')
+      } catch (error) {
+        return sendJson(res, 500, { error: String(error && error.message ? error.message : error) })
+      }
+      if (!entry) return sendJson(res, 501, { error: 'skill-curator config entry is not editable in this profile' })
+      const current = entry.options?.config || {}
+      const validated = validateConfigPatch(patch, current)
+      if (validated.error) return sendJson(res, 400, { error: validated.error })
+      try {
+        await configEditor.edit(entry, (rawCurrent) => ({ ...(rawCurrent || {}), ...validated.normalized }))
+        sendJson(res, 200, { ok: true, config: validated.merged })
+      } catch (error) {
+        sendJson(res, 409, { error: String(error && error.message ? error.message : error) })
       }
     }],
     [SKILL_ROUTE, (req, res) => {
