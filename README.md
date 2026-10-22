@@ -258,8 +258,8 @@ split the catalogs:
   only user subagents, so a normal code-review subagent called "skill review" is
   unaffected;
 - a separate `N curator runs` header action lists the internal runs and opens them with
-  the same dropdown interaction. The rows are also in the Skill Curator panel's review
-  history.
+  a portal-rendered dropdown (header stacking cannot swallow row clicks). The rows are
+  also in the Skill Curator panel's review history.
 
 ## Dashboard
 

@@ -68,7 +68,7 @@ test('client half registers the sidebar icon and the main panel', () => {
     if (id === 'react') return fakeReact()
     throw new Error(`unexpected require(${id})`)
   })
-  assert.deepEqual([...plugin.inject], ['slots', 'locale'])
+  assert.deepEqual([...plugin.inject], ['slots', 'locale', 'uiWorkspace'])
 
   const registrations = []
   const locale = {
@@ -78,7 +78,7 @@ test('client half registers the sidebar icon and the main panel', () => {
     getSnapshot: () => ({ revision: 1 }),
   }
   const ctx = {
-    get: (key) => (key === 'uiWorkspace' ? { openSession: () => {} } : undefined),
+    uiWorkspace: { openSession: () => {} },
     effect: (fn) => {
       fn()
       return () => {}

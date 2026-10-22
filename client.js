@@ -8,6 +8,12 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react')
     const h = React.createElement
+    let createPortal = null
+    try {
+      createPortal = require('react-dom').createPortal
+    } catch {
+      createPortal = null
+    }
     const { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } = React
 
     const API = '/skill-curator/api'
@@ -18,6 +24,7 @@ window.__ModuleLoader__.load({
 .sc-subagents-trigger{display:inline-flex;align-items:center;gap:6px;padding:3px 5px;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-tertiary);font:inherit;font-size:12px;line-height:18px;cursor:pointer}
 .sc-subagents-trigger:hover,.sc-subagents-trigger[aria-expanded=true]{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
 .sc-subagents-running{font-size:11px;color:var(--dsw-alias-state-business-primary)}
+.sc-subagents-error{font-size:11px;color:var(--dsw-alias-state-error-primary);cursor:help}
 .sc-subagents-menu{position:fixed;z-index:100;box-sizing:border-box;min-width:240px;max-width:340px;max-height:min(420px,60vh);overflow:auto;padding:4px;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-lg);background:var(--dsw-specific-menu);box-shadow:var(--dsw-elevation-prominent)}
 .sc-subagents-row{display:flex;align-items:center;gap:8px;width:100%;padding:7px 9px;border:0;border-radius:var(--dsw-radius-md);background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;line-height:17px;text-align:left;cursor:pointer}
 .sc-subagents-row:hover{background:var(--dsw-alias-interactive-bg-hover)}
@@ -471,7 +478,9 @@ window.__ModuleLoader__.load({
       const [open, setOpen] = useState(false)
       const [position, setPosition] = useState(undefined)
       const [internalIds, setInternalIds] = useState(() => new Set())
+      const [openError, setOpenError] = useState('')
       const rootRef = useRef(null)
+      const menuRef = useRef(null)
       const triggerRef = useRef(null)
       const allEntries = Array.isArray(catalog) ? catalog : []
       const entries = allEntries.filter((entry) => internalIds.has(entry.id))
@@ -511,7 +520,10 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         if (!open) return
         const close = (event) => {
-          if (rootRef.current && !rootRef.current.contains(event.target)) setOpen(false)
+          const target = event.target
+          const insideTrigger = rootRef.current && rootRef.current.contains(target)
+          const insideMenu = menuRef.current && menuRef.current.contains(target)
+          if (!insideTrigger && !insideMenu) setOpen(false)
         }
         document.addEventListener('pointerdown', close)
         return () => document.removeEventListener('pointerdown', close)
@@ -528,6 +540,29 @@ window.__ModuleLoader__.load({
         setOpen((current) => !current)
       }
 
+      const menu = h('div', {
+        ref: menuRef,
+        className: 'sc-subagents-menu',
+        style: { top: position?.top, right: position?.right },
+        onPointerDown: (event) => event.stopPropagation(),
+      },
+      entries.map((entry) => h('button', {
+        type: 'button',
+        key: entry.id,
+        className: 'sc-subagents-row',
+        onClick: () => {
+          setOpen(false)
+          setOpenError('')
+          try {
+            openSession({ parentSessionId: sessionId, childSessionId: entry.id, mode: entry.mode })
+          } catch (error) {
+            setOpenError(String(error && error.message ? error.message : error))
+          }
+        },
+      },
+      h('span', { className: `sc-subagents-dot${(statuses.get(entry.id)?.running ?? false) ? ' sc-subagents-dot-running' : ''}` }),
+      h('span', { className: 'sc-subagents-label' }, entry.label || entry.id))))
+
       return h('div', { className: 'sc-subagents', ref: rootRef },
         h('button', {
           type: 'button',
@@ -538,20 +573,10 @@ window.__ModuleLoader__.load({
           onClick: openMenu,
         },
         h('span', null, fill(t(entries.length === 1 ? 'curatorRunCountOne' : 'curatorRunCountMany'), { n: entries.length })),
-        running > 0 ? h('span', { className: 'sc-subagents-running' }, fill(t('curatorRunRunning'), { n: running })) : null),
+        running > 0 ? h('span', { className: 'sc-subagents-running' }, fill(t('curatorRunRunning'), { n: running })) : null,
+        openError ? h('span', { className: 'sc-subagents-error', title: openError }, '!') : null),
         open && position
-          ? h('div', { className: 'sc-subagents-menu', style: { top: position.top, right: position.right } },
-              entries.map((entry) => h('button', {
-                type: 'button',
-                key: entry.id,
-                className: 'sc-subagents-row',
-                onClick: () => {
-                  setOpen(false)
-                  openSession({ parentSessionId: sessionId, childSessionId: entry.id, mode: entry.mode })
-                },
-              },
-              h('span', { className: `sc-subagents-dot${(statuses.get(entry.id)?.running ?? false) ? ' sc-subagents-dot-running' : ''}` }),
-              h('span', { className: 'sc-subagents-label' }, entry.label || entry.id))))
+          ? (createPortal ? createPortal(menu, document.body) : menu)
           : null)
     }
 
@@ -1128,7 +1153,7 @@ window.__ModuleLoader__.load({
     }
 
     return {
-      inject: ['slots', 'locale'],
+      inject: ['slots', 'locale', 'uiWorkspace'],
       apply(ctx) {
         ctx.effect(() => {
           if (typeof document.createElement !== 'function' || typeof document.getElementById !== 'function' || !document.head) {
@@ -1182,12 +1207,7 @@ window.__ModuleLoader__.load({
           name: 'main',
           key: 'skill-curator',
         }, LocalizedCurator))
-        let uiWorkspace = null
-        try {
-          uiWorkspace = ctx.get ? ctx.get('uiWorkspace') : null
-        } catch {
-          uiWorkspace = null
-        }
+        const uiWorkspace = ctx.uiWorkspace
         const LocalizedSubagentCatalog = localize(SubagentCatalogFilter)
         ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
           name: 'conversation.session.header.actions',
@@ -1195,11 +1215,7 @@ window.__ModuleLoader__.load({
           order: 11,
           inject: () => ({
             openSession: (address) => {
-              try {
-                uiWorkspace?.openSession?.(address)
-              } catch {
-                /* navigation is unavailable */
-              }
+              uiWorkspace.openSession(address)
             },
           }),
         }, LocalizedSubagentCatalog))

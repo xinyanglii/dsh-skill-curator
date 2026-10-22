@@ -10,6 +10,8 @@
 - Internal runs are identified by child session id recorded by the Host, not by label:
   a normal code-review subagent called "skill review" stays in the subagents list and
   is never treated as curator work.
+- The curator-runs menu is rendered through a document-body portal so header stacking
+  and overlays cannot swallow row clicks; clicking a run opens that child session.
 
 ## 0.3.2 — 2026-10-22
 
