@@ -4,7 +4,11 @@
   "description": "Hermes-style in-process background skill review and lifecycle curation for DeepSeek Harness, with a read-only dashboard.",
   "type": "module",
   "license": "MIT",
-  "author": "dsh-skill-curator contributors",
+  "author": {
+    "name": "Xinyang Li",
+    "email": "lxymario@gmail.com",
+    "url": "https://github.com/xinyanglii"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/xinyanglii/dsh-skill-curator.git"
