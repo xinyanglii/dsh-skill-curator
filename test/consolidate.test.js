@@ -64,6 +64,14 @@ test('does not treat a missing umbrella as a consolidation', () => {
   assert.equal(report.pruned[0].source, 'absorbed_into target missing')
 })
 
+test('renders a dry-run report', () => {
+  const report = buildConsolidationReport({ startedAt: started, before: before(), after: before(), dryRun: true })
+  assert.equal(report.dryRun, true)
+  const markdown = renderConsolidationReport(report)
+  assert.match(markdown, /dry run/)
+  assert.match(markdown, /no writes were allowed/)
+})
+
 test('renders a report with sections and recovery hints', () => {
   const report = buildConsolidationReport({
     startedAt: started,

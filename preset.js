@@ -210,11 +210,15 @@ export function apply(ctx, config = {}) {
   const skillRead = {
     name: 'skill_read',
     description:
-      'Read one skill before changing it: returns its SKILL.md (frontmatter and body), the sha256 to pass back as expect_sha on a patch, and the support files it already has. Patches require a fresh sha256 from this tool.',
+      'Read one skill before changing it: returns its SKILL.md (frontmatter and body), the sha256 to pass back as expect_sha on a patch, and the support files it already has. With path, returns that support file and its sha256; overwriting an existing support file requires that sha. Read-before-write is enforced.',
     parameters: {
       type: 'object',
       properties: {
         name: { type: 'string', description: 'Exact skill name from skill_list.' },
+        path: {
+          type: 'string',
+          description: 'Optional support file path under references/, scripts/, templates/ or assets/.',
+        },
       },
       required: ['name'],
       additionalProperties: false,
@@ -224,10 +228,26 @@ export function apply(ctx, config = {}) {
       exec?.signal?.throwIfAborted?.()
       const skillName = requireString(args, 'name')
       const dir = skillPath(skillName)
-      const file = path.join(dir, 'SKILL.md')
+      const relative = typeof args?.path === 'string' ? args.path.trim() : ''
+      let target
+      if (relative) {
+        if (!isSafeSupportPath(relative)) {
+          throw new Error('path must be under references/, scripts/, templates/ or assets/ without ".."')
+        }
+        target = path.join(dir, relative)
+        exec?.signal?.throwIfAborted?.()
+        let content
+        try {
+          content = fs.readFileSync(target, 'utf8')
+        } catch (error) {
+          throw new Error(`no file "${relative}" in skill "${skillName}": ${errorText(error)}`)
+        }
+        return [`skill: ${skillName}`, `file: ${relative}`, `sha256: ${sha256(content)}`, '', content].join('\n')
+      }
+      target = path.join(dir, 'SKILL.md')
       let content
       try {
-        content = fs.readFileSync(file, 'utf8')
+        content = fs.readFileSync(target, 'utf8')
       } catch (error) {
         throw new Error(`no skill "${skillName}": ${errorText(error)}`)
       }
@@ -268,7 +288,7 @@ export function apply(ctx, config = {}) {
         new: { type: 'string', description: 'patch only: replacement text for old.' },
         expect_sha: {
           type: 'string',
-          description: 'patch only: sha256 from skill_read; the write fails if the file changed since.',
+          description: 'patch (required) or write_file when overwriting an existing file: sha256 from skill_read; the write fails if the file changed since.',
         },
         path: {
           type: 'string',
@@ -333,19 +353,10 @@ export function apply(ctx, config = {}) {
         if (!isSafeSupportPath(relative)) {
           throw new Error('path must be under references/, scripts/, templates/ or assets/ without ".."')
         }
-        result = await runCli(
-          cfg,
-          [
-            'manage',
-            'write_file',
-            skillName,
-            `--path=${relative}`,
-            '--file=-',
-            '--actor=agent',
-          ],
-          content,
-          exec.signal,
-        )
+        const writeArgs = ['manage', 'write_file', skillName, `--path=${relative}`, '--file=-', '--actor=agent']
+        const expectSha = typeof args?.expect_sha === 'string' ? args.expect_sha.trim() : ''
+        if (expectSha) writeArgs.push(`--expect-sha=${expectSha}`)
+        result = await runCli(cfg, writeArgs, content, exec.signal)
       } else if (action === 'archive') {
         const absorbedInto = typeof args?.absorbed_into === 'string' ? args.absorbed_into.trim() : ''
         const archiveArgs = ['manage', 'archive', skillName, '--actor=agent']

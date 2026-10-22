@@ -26,6 +26,7 @@ export function buildConsolidationReport({
   output = '',
   error = null,
   autoSummary = '',
+  dryRun = false,
 }) {
   const beforeRows = Array.isArray(before) ? before : []
   const afterRows = Array.isArray(after) ? after : []
@@ -73,6 +74,7 @@ export function buildConsolidationReport({
     finishedAt: iso(finishedAt),
     durationMs: Math.max(0, finishedAt - startedAt),
     autoSummary: String(autoSummary || ''),
+    dryRun: dryRun === true,
     beforeTotal: beforeNames.size,
     afterTotal: afterNames.size,
     delta: afterNames.size - beforeNames.size,
@@ -95,11 +97,12 @@ export function buildConsolidationReport({
 export function renderConsolidationReport(report) {
   const seconds = Math.round((report.durationMs || 0) / 1000)
   const lines = [
-    `# Curator consolidation — ${report.startedAt}`,
+    `# Curator consolidation — ${report.startedAt}${report.dryRun ? ' (dry run)' : ''}`,
     '',
     `Library: ${report.beforeTotal} → ${report.afterTotal} skills (${report.delta >= 0 ? '+' : ''}${report.delta}) · ${seconds}s`,
     '',
   ]
+  if (report.dryRun) lines.push('> Dry run: no writes were allowed. The sections below describe what the pass reported.', '')
   if (report.error) lines.push(`> ⚠ Consolidation pass error: \`${report.error}\``, '')
   if (report.autoSummary) lines.push('## Deterministic curator (no LLM)', '', report.autoSummary, '')
   lines.push('## Consolidation pass', '')

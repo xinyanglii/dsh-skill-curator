@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import time
 import os
 import pathlib
 import subprocess
@@ -325,6 +326,144 @@ class SkillctlTest(unittest.TestCase):
             "--expect-sha=" + sha, "--actor=agent",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_review_prompt_includes_loaded_skills(self):
+        from importlib.machinery import SourceFileLoader
+
+        loader = SourceFileLoader("skillctl_loaded", str(SCRIPT))
+        spec = importlib.util.spec_from_loader("skillctl_loaded", loader)
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+        prompt = module.review_prompt("user: hi", ["- [manual] demo: Demo"], ["demo", "other"])
+        self.assertIn("Skills the primary agent loaded this session:", prompt)
+        self.assertIn("- demo", prompt)
+        self.assertIn("- other", prompt)
+        self.assertIn("Treat their conventions as binding", prompt)
+        without = module.review_prompt("user: hi", ["- demo: Demo"], [])
+        self.assertNotIn("Skills the primary agent loaded", without)
+
+    def test_write_file_requires_a_sha_to_overwrite(self):
+        self.make_skill("agent-skill")
+        create = self.run_cli(
+            "manage", "write_file", "agent-skill", "--path=references/a.md", "--file=-", "--actor=agent",
+            stdin="first\n",
+        )
+        self.assertEqual(create.returncode, 0, create.stderr)
+        target = self.root / "agent-skill" / "references" / "a.md"
+        sha = hashlib.sha256(target.read_bytes()).hexdigest()
+
+        no_sha = self.run_cli(
+            "manage", "write_file", "agent-skill", "--path=references/a.md", "--file=-", "--actor=agent",
+            stdin="second\n",
+        )
+        self.assertNotEqual(no_sha.returncode, 0)
+        self.assertIn("already exists", no_sha.stderr)
+        self.assertEqual(target.read_text(), "first\n")
+
+        wrong = self.run_cli(
+            "manage", "write_file", "agent-skill", "--path=references/a.md", "--file=-", "--actor=agent",
+            "--expect-sha=" + "0" * 64, stdin="second\n",
+        )
+        self.assertNotEqual(wrong.returncode, 0)
+        self.assertEqual(target.read_text(), "first\n")
+
+        ok = self.run_cli(
+            "manage", "write_file", "agent-skill", "--path=references/a.md", "--file=-", "--actor=agent",
+            "--expect-sha=" + sha, stdin="second\n",
+        )
+        self.assertEqual(ok.returncode, 0, ok.stderr)
+        self.assertEqual(target.read_text(), "second\n")
+
+    def test_snapshot_backup_list_and_restore(self):
+        self.make_skill("demo")
+        backup = self.run_cli("backup", "--reason=test", "--keep=5")
+        self.assertEqual(backup.returncode, 0, backup.stderr)
+        snapshot = (self.root / ".curator_backups").iterdir()
+        snapshot_id = sorted(p.name for p in snapshot if p.is_dir())[0]
+        manifest = json.loads((self.root / ".curator_backups" / snapshot_id / "manifest.json").read_text())
+        self.assertEqual(manifest["reason"], "test")
+        self.assertIn("demo", manifest["skills"])
+
+        listing = self.run_cli("backup", "--list")
+        self.assertIn(snapshot_id, listing.stdout)
+        self.assertIn("test", listing.stdout)
+
+        (self.root / "demo" / "SKILL.md").write_text("changed\n")
+        restored = self.run_cli("rollback", "--snapshot=" + snapshot_id)
+        self.assertEqual(restored.returncode, 0, restored.stderr)
+        self.assertIn("demo", (self.root / "demo" / "SKILL.md").read_text())
+
+    def test_status_pause_and_unmanaged_ops(self):
+        self.make_skill("agent-skill")
+        self.make_skill("manual-skill", created_by="manual")
+        status = self.run_cli("status", "--json")
+        self.assertEqual(status.returncode, 0, status.stderr)
+        payload = json.loads(status.stdout)
+        self.assertEqual(payload["skills"]["total"], 2)
+        self.assertEqual(payload["skills"]["origins"]["manual"], 1)
+        self.assertFalse(payload["curator"]["paused"])
+
+        self.assertEqual(self.run_cli("pause").returncode, 0)
+        paused = json.loads(self.run_cli("status", "--json").stdout)
+        self.assertTrue(paused["curator"]["paused"])
+        self.assertEqual(self.run_cli("resume").returncode, 0)
+
+        unmanaged = self.run_cli("list-unmanaged")
+        self.assertIn("manual-skill", unmanaged.stdout)
+        self.assertNotIn("agent-skill", unmanaged.stdout)
+        dry = self.run_cli("adopt", "--all-unmanaged", "--dry-run")
+        self.assertIn("would adopt", dry.stdout)
+        adopted = self.run_cli("adopt", "--all-unmanaged", "--yes")
+        self.assertIn("1 skill(s) adopted", adopted.stdout)
+        self.assertIn("[agent] manual-skill", self.run_cli("review").stdout)
+
+    def test_dry_run_marker_blocks_writes(self):
+        self.make_skill("agent-skill")
+        marker = self.root / ".dsh-curator" / "dry-run"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("{}\n")
+        try:
+            create = self.run_cli(
+                "manage", "create", "blocked", "--description=Blocked", "--file=-",
+                stdin="## When to Use\n\nUse it.\n",
+            )
+            self.assertNotEqual(create.returncode, 0)
+            self.assertIn("dry run is active", create.stderr)
+            archive = self.run_cli("manage", "archive", "agent-skill", "--actor=agent")
+            self.assertNotEqual(archive.returncode, 0)
+            self.assertTrue((self.root / "agent-skill").exists())
+        finally:
+            marker.unlink()
+
+    def test_prune_list_archived_and_purge(self):
+        self.make_skill("old-agent")
+        usage = json.loads((self.root / ".dsh-usage.json").read_text())
+        usage["skills"]["old-agent"]["created_at"] = "2020-01-01T00:00:00Z"
+        usage["skills"]["old-agent"]["last_used_at"] = None
+        (self.root / ".dsh-usage.json").write_text(json.dumps(usage))
+        prune = self.run_cli("prune", "--days", "1", "--apply")
+        self.assertEqual(prune.returncode, 0, prune.stderr)
+        self.assertFalse((self.root / "old-agent").exists())
+        self.assertTrue((self.root / ".archive" / "old-agent").exists())
+        listed = self.run_cli("list-archived")
+        self.assertIn("old-agent", listed.stdout)
+
+        old = time.time() - 86400 * 10
+        os.utime(self.root / ".archive" / "old-agent", (old, old))
+        dry = self.run_cli("purge", "--days", "1")
+        self.assertIn("would delete", dry.stdout)
+        purge = self.run_cli("purge", "--days", "1", "--apply")
+        self.assertEqual(purge.returncode, 0, purge.stderr)
+        self.assertFalse((self.root / ".archive" / "old-agent").exists())
+
+    def test_ledger_filters_and_json(self):
+        self.make_skill("agent-skill")
+        self.make_skill("other-skill")
+        filtered = self.run_cli("ledger", "--skill", "agent-skill", "--json")
+        self.assertEqual(filtered.returncode, 0, filtered.stderr)
+        entries = json.loads(filtered.stdout)
+        self.assertTrue(entries)
+        self.assertTrue(all(entry["name"] == "agent-skill" for entry in entries))
 
     def test_validate_accepts_a_generated_skill(self):
         self.create_demo()

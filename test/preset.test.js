@@ -190,3 +190,25 @@ test('skill_manage archive omits absorbed_into when not provided', async () => {
   const [args] = argvLines(log)
   assert.ok(!args.some((arg) => arg.startsWith('--absorbed-into=')))
 })
+
+
+test('skill_read reads a support file and returns its sha', async () => {
+  const { fake, skillsRoot } = makeHarness()
+  const dir = path.join(skillsRoot, 'demo', 'references')
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(path.join(dir, 'note.md'), 'support content\n')
+  const output = await fake.tools.get('skill_read').execute({ name: 'demo', path: 'references/note.md' }, exec())
+  assert.match(output, /file: references\/note\.md/)
+  assert.match(output, /sha256: [a-f0-9]{64}/)
+  assert.match(output, /support content/)
+})
+
+test('skill_manage write_file forwards expect_sha', async () => {
+  const { fake, log } = makeHarness()
+  await fake.tools.get('skill_manage').execute(
+    { action: 'write_file', name: 'demo', path: 'references/note.md', content: 'x', expect_sha: 'a'.repeat(64) },
+    exec(),
+  )
+  const [args] = argvLines(log)
+  assert.ok(args.includes(`--expect-sha=${'a'.repeat(64)}`))
+})

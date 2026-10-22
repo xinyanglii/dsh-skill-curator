@@ -21,8 +21,10 @@ import argparse
 import hashlib
 import json
 import os
+import pathlib
 import re
 import shutil
+import tempfile
 import subprocess
 import sys
 import tarfile
@@ -37,6 +39,10 @@ USAGE = ROOT / ".dsh-usage.json"
 LEDGER = ROOT / ".curator_ledger.jsonl"
 BLOBS = ROOT / ".ledger" / "blobs"
 BACKUPS = ROOT / ".curator_backups"
+CURATOR_DIR = ROOT / ".dsh-curator"
+DRY_RUN_MARKER = CURATOR_DIR / "dry-run"
+PAUSE_MARKER = CURATOR_DIR / "paused"
+HOST_STATE = CURATOR_DIR / "state.json"
 SESSIONS = Path(os.environ.get("DSH_SESSIONS") or HOME / ".dsh" / "sessions")
 
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
@@ -53,6 +59,32 @@ FENCE = chr(96) * 3
 
 def now():
     return datetime.now(timezone.utc)
+
+
+def in_dry_run():
+    return os.environ.get("DSH_CURATOR_DRY_RUN") == "1" or DRY_RUN_MARKER.is_file()
+
+
+def guard_dry_run(action):
+    if not in_dry_run():
+        return True
+    print("error: dry run is active; refusing to %s the skill library" % action, file=sys.stderr)
+    return False
+
+
+def iso_from_ms(value):
+    try:
+        return iso(datetime.fromtimestamp(float(value) / 1000.0, timezone.utc))
+    except (TypeError, ValueError, OSError):
+        return ""
+
+
+def read_host_state():
+    try:
+        data = json.loads(HOST_STATE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
 
 
 def iso(dt):
@@ -309,6 +341,8 @@ def cmd_new(args, body=None):
     `manage create`), the caller supplies the markdown body only; the frontmatter
     is generated here so a model can never hand-write invalid YAML.
     """
+    if not guard_dry_run("create"):
+        return 2
     name = args.name
     if not NAME_RE.match(name):
         print("error: invalid name %r (lowercase letters/digits/hyphens, <=64)" % name, file=sys.stderr)
@@ -422,6 +456,19 @@ def skill_event_name(event):
         match = SKILL_CONTENT_RE.search(json.dumps(payload, ensure_ascii=False))
         return match.group(1) if match else None
     return None
+
+
+def session_loaded_skills(session_id, limit=8):
+    """Skill names the primary agent actually loaded during one session, in first-seen order."""
+    match = [p for p in session_files() if session_id in str(p)]
+    if not match:
+        return []
+    seen = []
+    for event in iter_events(match[0]):
+        name = skill_event_name(event)
+        if name and name not in seen:
+            seen.append(name)
+    return seen[-limit:]
 
 
 def session_files():
@@ -548,6 +595,8 @@ def guard_actor(name, actor, action):
 
 
 def apply_edit(name, new_text, actor, op, expect_sha=None):
+    if not guard_dry_run(op):
+        return 2
     path = ROOT / name / "SKILL.md"
     if not path.is_file():
         print("error: no skill %r" % name, file=sys.stderr)
@@ -610,6 +659,8 @@ def cmd_manage(args):
             new_text = read_input(args.file)
         return apply_edit(args.name, new_text, args.actor, action, args.expect_sha)
     if action == "write_file":
+        if not guard_dry_run("write a support file"):
+            return 2
         if not args.path or not args.file:
             print("error: write_file needs --path and --file", file=sys.stderr)
             return 2
@@ -621,6 +672,17 @@ def cmd_manage(args):
         if not (ROOT / args.name).is_dir():
             print("error: no skill %r" % args.name, file=sys.stderr)
             return 2
+        if target.exists():
+            expect = getattr(args, "expect_sha", None)
+            if not expect:
+                print("error: %s already exists; call skill_read with --path=%s and pass its sha256 as --expect-sha"
+                      % (relative, relative), file=sys.stderr)
+                return 2
+            current = sha_file(target)
+            if expect != current:
+                print("error: read-before-write failed for %s: expected %s, file is %s"
+                      % (relative, expect, current), file=sys.stderr)
+                return 2
         content = read_input(args.file)
         content_bytes = len(content.encode("utf-8"))
         if content_bytes > MAX_SUPPORT_FILE_BYTES:
@@ -668,11 +730,11 @@ def archive_dir(name, data):
 CONSOLIDATE_REQUEST = ROOT / ".dsh-curator" / "consolidate.request"
 
 
-def request_consolidation():
+def request_consolidation(dry_run=False):
     """Ask the running curator plugin to run one consolidation pass at the next turn end."""
     CONSOLIDATE_REQUEST.parent.mkdir(parents=True, exist_ok=True)
     CONSOLIDATE_REQUEST.write_text(
-        json.dumps({"requested_at": iso(now())}, ensure_ascii=False) + "\n",
+        json.dumps({"requested_at": iso(now()), "dry_run": bool(dry_run)}, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
     return CONSOLIDATE_REQUEST
@@ -680,7 +742,7 @@ def request_consolidation():
 
 def cmd_curator(args):
     if getattr(args, "request_consolidation", False):
-        path = request_consolidation()
+        path = request_consolidation(dry_run=bool(getattr(args, "dry_run", False)))
         print("requested consolidation pass: %s" % path)
         return 0
     data = load_usage()
@@ -824,21 +886,200 @@ def build_consolidation_prompt():
 
 
 def cmd_consolidate(args):
-    print(build_consolidation_prompt())
+    prompt = build_consolidation_prompt()
+    if getattr(args, "dry_run", False):
+        prompt = ("DRY RUN: do not write. Report only the merges you would make, then stop;\n"
+                  "any write attempt will be refused.\n\n" + prompt)
+    print(prompt)
     return 0
 
 
 def cmd_adopt(args):
-    if not valid_name(args.name):
-        print("error: invalid name %r" % args.name, file=sys.stderr)
+    if not guard_dry_run("adopt"):
         return 2
     data = load_usage()
-    if not (ROOT / args.name).is_dir():
-        print("error: no skill %r" % args.name, file=sys.stderr)
-        return 2
-    record(data, args.name)["created_by"] = "agent"
-    save_usage(data)
-    print("adopted %s (created_by=agent; clocks untouched)" % args.name)
+    names = []
+    if getattr(args, "all_unmanaged", False):
+        for directory in skill_dirs():
+            rec = data["skills"].get(directory.name, {})
+            if rec.get("created_by") != "agent":
+                names.append(directory.name)
+        if not names:
+            print("no unmanaged skills")
+            return 0
+        if not getattr(args, "dry_run", False) and not getattr(args, "yes", False):
+            print("error: pass --yes with --all-unmanaged to adopt %d skill(s)" % len(names), file=sys.stderr)
+            return 2
+    else:
+        name = getattr(args, "name", None)
+        if not name:
+            print("error: pass a skill name or --all-unmanaged", file=sys.stderr)
+            return 2
+        if not valid_name(name):
+            print("error: invalid name %r" % name, file=sys.stderr)
+            return 2
+        if not (ROOT / name).is_dir():
+            print("error: no skill %r" % name, file=sys.stderr)
+            return 2
+        names = [name]
+    adopted = 0
+    for name in names:
+        print("%s %s" % ("would adopt" if getattr(args, "dry_run", False) else "adopted", name))
+        if not getattr(args, "dry_run", False):
+            record(data, name)["created_by"] = "agent"
+            adopted += 1
+    if adopted:
+        save_usage(data)
+    if not getattr(args, "dry_run", False):
+        print("%d skill(s) adopted (created_by=agent; clocks untouched)" % adopted)
+    return 0
+
+
+def cmd_status(args):
+    data = load_usage()
+    directories = skill_dirs()
+    states, origins = {}, {}
+    pinned = 0
+    for directory in directories:
+        rec = data["skills"].get(directory.name, {})
+        state = rec.get("state") or "active"
+        states[state] = states.get(state, 0) + 1
+        origin = rec.get("created_by") or "manual"
+        origins[origin] = origins.get(origin, 0) + 1
+        if rec.get("pinned"):
+            pinned += 1
+    archived = [d for d in ARCHIVE.iterdir() if d.is_dir()] if ARCHIVE.is_dir() else []
+    snapshots = [d for d in BACKUPS.iterdir() if d.is_dir() and (d / "skills.tar.gz").is_file()] if BACKUPS.is_dir() else []
+    reports = [d for d in (CURATOR_DIR / "curator-runs").iterdir() if d.is_dir()] if (CURATOR_DIR / "curator-runs").is_dir() else []
+    ledger_count = len(LEDGER.read_text(encoding="utf-8").splitlines()) if LEDGER.is_file() else 0
+    host = read_host_state()
+    payload = {
+        "now": iso(now()),
+        "skills": {"total": len(directories), "states": states, "origins": origins, "pinned": pinned},
+        "archived": len(archived),
+        "snapshots": {"count": len(snapshots), "latest": max((d.name for d in snapshots), default=None)},
+        "curator": {
+            "paused": PAUSE_MARKER.is_file(),
+            "dry_run": in_dry_run(),
+            "last_curator_at": iso_from_ms(host.get("lastCuratorAt")) or None,
+            "last_consolidate_at": iso_from_ms(host.get("lastConsolidateAt")) or None,
+            "last_consolidate_summary": host.get("lastConsolidateSummary") or "",
+            "review_total": host.get("reviewTotal", 0),
+            "review_failed": host.get("reviewFailed", 0),
+        },
+        "ledger_entries": ledger_count,
+        "report_runs": len(reports),
+    }
+    if getattr(args, "json", False):
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+    print("library: %d active skill(s): %s" % (len(directories), ", ".join("%s=%d" % (k, v) for k, v in sorted(states.items())) or "none"))
+    print("origins: %s" % (", ".join("%s=%d" % (k, v) for k, v in sorted(origins.items())) or "none"))
+    print("archived: %d | snapshots: %d | ledger: %d | reports: %d" % (len(archived), len(snapshots), ledger_count, len(reports)))
+    print("curator: %s%s | last run %s | last consolidation %s" % (
+        "paused" if PAUSE_MARKER.is_file() else "active",
+        ", dry-run" if in_dry_run() else "",
+        payload["curator"]["last_curator_at"] or "never",
+        payload["curator"]["last_consolidate_at"] or "never",
+    ))
+    if payload["curator"]["last_consolidate_summary"]:
+        print("last consolidation: %s" % payload["curator"]["last_consolidate_summary"])
+    return 0
+
+
+def cmd_pause(args):
+    CURATOR_DIR.mkdir(parents=True, exist_ok=True)
+    PAUSE_MARKER.write_text(json.dumps({"paused_at": iso(now())}, ensure_ascii=False) + "\n", encoding="utf-8")
+    print("curator paused")
+    return 0
+
+
+def cmd_resume(args):
+    try:
+        PAUSE_MARKER.unlink()
+    except FileNotFoundError:
+        pass
+    print("curator resumed")
+    return 0
+
+
+def cmd_list_unmanaged(args):
+    data = load_usage()
+    rows = []
+    for directory in skill_dirs():
+        rec = data["skills"].get(directory.name, {})
+        if rec.get("created_by") != "agent":
+            rows.append((directory.name, rec.get("created_by") or "manual", rec.get("state") or "active"))
+    if not rows:
+        print("no unmanaged skills")
+        return 0
+    width = max(len(row[0]) for row in rows)
+    for name, origin, state in rows:
+        print("%-*s  %-9s  %s" % (width, name, origin, state))
+    return 0
+
+
+def cmd_list_archived(args):
+    archived = sorted((d for d in ARCHIVE.iterdir() if d.is_dir()), key=lambda d: d.stat().st_mtime, reverse=True) if ARCHIVE.is_dir() else []
+    if not archived:
+        print("no archived skills")
+        return 0
+    data = load_usage()
+    for directory in archived:
+        rec = data["skills"].get(directory.name, {})
+        print("%s  %s  %s" % (directory.name, (rec.get("archived_at") or iso(datetime.fromtimestamp(directory.stat().st_mtime, timezone.utc)))[:19], "restorable"))
+    return 0
+
+
+def cmd_prune(args):
+    data = load_usage()
+    days = args.days if args.days is not None else 30
+    changes = 0
+    for directory in skill_dirs():
+        name = directory.name
+        rec = data["skills"].get(name, {})
+        if not is_curator_managed(rec) or rec.get("pinned"):
+            continue
+        anchor = parse_iso(rec.get("last_used_at")) or parse_iso(rec.get("created_at")) or datetime.fromtimestamp(directory.stat().st_mtime, timezone.utc)
+        age = (now() - anchor).total_seconds() / 86400.0
+        if age < days:
+            continue
+        print("%s %s (%.1fd idle)" % ("archive" if args.apply else "would archive", name, age))
+        if args.apply:
+            before = snapshot_tree(directory)
+            if archive_dir(name, data):
+                ledger_append("archive", name, before, {}, "curator")
+                changes += 1
+    if args.apply:
+        save_usage(data)
+        print("%d skill(s) archived" % changes)
+    else:
+        print("dry-run: pass --apply to archive")
+    return 0
+
+
+def cmd_purge(args):
+    if not ARCHIVE.is_dir():
+        print("no archived skills")
+        return 0
+    days = args.days if args.days is not None else 30
+    removed = 0
+    for directory in sorted(ARCHIVE.iterdir()):
+        if not directory.is_dir():
+            continue
+        age = (now() - datetime.fromtimestamp(directory.stat().st_mtime, timezone.utc)).total_seconds() / 86400.0
+        if age < days:
+            continue
+        print("%s %s (archived %.1fd ago)" % ("delete" if args.apply else "would delete", directory.name, age))
+        if args.apply:
+            before = snapshot_tree(directory)
+            shutil.rmtree(directory)
+            ledger_append("purge", directory.name, before, {}, "user")
+            removed += 1
+    if args.apply:
+        print("%d archived skill(s) purged" % removed)
+    else:
+        print("dry-run: pass --apply to purge")
     return 0
 
 
@@ -857,6 +1098,8 @@ def cmd_pin(args):
 
 
 def cmd_archive(args):
+    if not guard_dry_run("archive"):
+        return 2
     if not valid_name(args.name):
         print("error: invalid name %r" % args.name, file=sys.stderr)
         return 2
@@ -903,6 +1146,17 @@ def cmd_archive(args):
     return 2
 
 
+def cmd_rollback(args):
+    if getattr(args, "list", False):
+        return list_snapshots()
+    if getattr(args, "snapshot", None):
+        return _restore_snapshot(args.snapshot)
+    if getattr(args, "entry", None):
+        return rollback_entry(args.entry)
+    print("error: pass a ledger entry id, --snapshot ID, or --list", file=sys.stderr)
+    return 2
+
+
 def cmd_restore(args):
     if not valid_name(args.name):
         print("error: invalid name %r" % args.name, file=sys.stderr)
@@ -928,29 +1182,127 @@ def cmd_ledger(args):
     if not LEDGER.is_file():
         print("no ledger entries")
         return 0
-    for line in LEDGER.read_text(encoding="utf-8").splitlines()[-args.limit:]:
+    entries = []
+    for line in LEDGER.read_text(encoding="utf-8").splitlines():
         try:
             entry = json.loads(line)
         except json.JSONDecodeError:
             continue
-        print("%s  %-11s %-28s %s" % (entry.get("id"), entry.get("op"), entry.get("name"), entry.get("actor")))
+        if getattr(args, "skill", None) and entry.get("name") != args.skill:
+            continue
+        entries.append(entry)
+    entries = entries[-args.limit:]
+    if getattr(args, "json", False):
+        print(json.dumps(entries, ensure_ascii=False, indent=2))
+        return 0
+    if not entries:
+        print("no matching ledger entries")
+        return 0
+    for entry in entries:
+        extra = (" -> %s" % entry["absorbed_into"]) if entry.get("absorbed_into") else ""
+        print("%s  %-11s %-28s %s%s" % (entry.get("id"), entry.get("op"), entry.get("name"), entry.get("actor"), extra))
+    return 0
+
+
+def _make_snapshot(reason="manual", keep=2):
+    BACKUPS.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    target = BACKUPS / stamp
+    suffix = 1
+    while target.exists():
+        suffix += 1
+        target = BACKUPS / ("%s-%d" % (stamp, suffix))
+    target.mkdir(parents=True)
+    archive_path = target / "skills.tar.gz"
+    skills = skill_dirs()
+    with tarfile.open(archive_path, "w:gz") as tar:
+        for directory in skills:
+            tar.add(directory, arcname=directory.name)
+    (target / "manifest.json").write_text(json.dumps({
+        "created_at": iso(now()),
+        "reason": reason,
+        "skills": [directory.name for directory in skills],
+    }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    backups = sorted(p for p in BACKUPS.iterdir() if p.is_dir() and (p / "skills.tar.gz").is_file())
+    for stale in backups[:-keep] if keep > 0 else []:
+        shutil.rmtree(stale)
+    return target, archive_path
+
+
+def list_snapshots():
+    if not BACKUPS.is_dir():
+        print("no snapshots under %s" % BACKUPS)
+        return 0
+    snapshots = sorted((p for p in BACKUPS.iterdir() if p.is_dir() and (p / "skills.tar.gz").is_file()), reverse=True)
+    if not snapshots:
+        print("no snapshots under %s" % BACKUPS)
+        return 0
+    print("%-20s  %-19s  %-6s  %s" % ("snapshot", "created", "skills", "reason"))
+    for snapshot in snapshots:
+        manifest = {}
+        try:
+            manifest = json.loads((snapshot / "manifest.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            pass
+        print("%-20s  %-19s  %-6d  %s" % (
+            snapshot.name,
+            str(manifest.get("created_at", ""))[:19],
+            len(manifest.get("skills") or []),
+            manifest.get("reason", ""),
+        ))
     return 0
 
 
 def cmd_backup(args):
-    BACKUPS.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    target = BACKUPS / stamp
-    target.mkdir(parents=True)
-    archive_path = target / "skills.tar.gz"
-    with tarfile.open(archive_path, "w:gz") as tar:
-        for directory in skill_dirs():
-            tar.add(directory, arcname=directory.name)
-    backups = sorted(p for p in BACKUPS.iterdir() if p.is_dir())
-    for old in backups[:-args.keep]:
-        shutil.rmtree(old)
+    if getattr(args, "list", False):
+        return list_snapshots()
+    reason = getattr(args, "reason", None) or "manual"
+    target, archive_path = _make_snapshot(reason=reason, keep=getattr(args, "keep", 2))
     print("backup %s" % archive_path)
     return 0
+
+
+def _restore_snapshot(snapshot_id):
+    snapshots = sorted((p for p in BACKUPS.iterdir() if p.is_dir() and (p / "skills.tar.gz").is_file())) if BACKUPS.is_dir() else []
+    if not snapshots:
+        print("error: no snapshots under %s" % BACKUPS, file=sys.stderr)
+        return 2
+    if snapshot_id == "latest":
+        snapshot = snapshots[-1]
+    else:
+        exact = [p for p in snapshots if p.name == snapshot_id]
+        prefix = [p for p in snapshots if p.name.startswith(snapshot_id)]
+        matches = exact or prefix
+        if len(matches) != 1:
+            print("error: snapshot %r is %s" % (snapshot_id, "ambiguous" if matches else "unknown"), file=sys.stderr)
+            return 2
+        snapshot = matches[0]
+    archive_path = snapshot / "skills.tar.gz"
+    with tarfile.open(archive_path, "r:gz") as tar:
+        members = tar.getmembers()
+        for member in members:
+            parts = pathlib.PurePosixPath(member.name).parts
+            if member.name.startswith("/") or ".." in parts or not parts:
+                print("error: unsafe path in snapshot: %s" % member.name, file=sys.stderr)
+                return 2
+        temp = pathlib.Path(tempfile.mkdtemp(prefix="skillctl-restore-"))
+        try:
+            tar.extractall(temp)
+            restored = [p for p in temp.iterdir() if p.is_dir()]
+            if not restored:
+                print("error: snapshot has no skill directories", file=sys.stderr)
+                return 2
+            safety, _ = _make_snapshot(reason="pre-rollback", keep=0)
+            print("safety snapshot %s" % safety.name)
+            for child in list(ROOT.iterdir()):
+                if child.is_dir() and not child.name.startswith("."):
+                    shutil.rmtree(child)
+            for source in restored:
+                shutil.move(str(source), str(ROOT / source.name))
+            print("restored %d skill(s) from %s" % (len(restored), snapshot.name))
+            return 0
+        finally:
+            shutil.rmtree(temp, ignore_errors=True)
 
 
 def session_transcript(session_id, limit=40000):
@@ -987,14 +1339,15 @@ def session_transcript(session_id, limit=40000):
     return joined[-limit:]
 
 
-def review_prompt(transcript, skills):
+def review_prompt(transcript, skills, loaded_skills=None):
     tool_rules = [
         "6. Do every write through the skill tools; you have no shell and never edit files directly:",
         "   skill_list                         list the library with origin, state and usage",
-        "   skill_read NAME                    read SKILL.md and its sha256 before editing",
+        "   skill_read NAME [--path=FILE]      read SKILL.md or one support file, with sha256",
         "   skill_manage create                name, description, content (body only)",
         "   skill_manage patch                 name, old, new, expect_sha from skill_read",
-        "   skill_manage write_file            name, path under references/scripts/templates/assets, content",
+        "   skill_manage write_file            name, path under references/scripts/templates/assets, content,",
+        "                                      expect_sha for an existing file",
         "   skill_manage archive               name (retire an obsolete skill; never delete)",
     ]
     closing = "Decide whether anything here is worth saving or fixing. If yes, use the skill tools."
@@ -1025,6 +1378,11 @@ def review_prompt(transcript, skills):
         "Existing skills:",
         *(skills or ["- (none)"]),
         "",
+        *(["Skills the primary agent loaded this session:",
+           *("- %s" % name for name in (loaded_skills or [])),
+           "Treat their conventions as binding: read them before judging or writing.",
+           "If one is user-owned and already covers the lesson, do not create a parallel skill.",
+           ""] if loaded_skills else []),
         "Conversation to review:",
         transcript or "(no transcript supplied)",
         "",
@@ -1036,6 +1394,7 @@ def review_prompt(transcript, skills):
 def cmd_review(args):
     session_id = args.session
     transcript = session_transcript(session_id, args.max_chars) if session_id else ""
+    loaded_skills = session_loaded_skills(session_id) if session_id else []
     data = load_usage()
     skills = []
     for directory in skill_dirs():
@@ -1044,7 +1403,7 @@ def cmd_review(args):
         rec = data["skills"].get(directory.name, {})
         origin = rec.get("created_by") or "manual"
         skills.append("- [%s] %s: %s" % (origin, directory.name, str(fm.get("description", ""))[:120]))
-    print(review_prompt(transcript, skills))
+    print(review_prompt(transcript, skills, loaded_skills))
     return 0
 
 
@@ -1082,7 +1441,34 @@ def main(argv):
     p.set_defaults(func=cmd_list)
 
     p = sub.add_parser("usage")
+    p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_usage)
+
+    p = sub.add_parser("status")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("pause")
+    p.set_defaults(func=cmd_pause)
+
+    p = sub.add_parser("resume")
+    p.set_defaults(func=cmd_resume)
+
+    p = sub.add_parser("list-unmanaged")
+    p.set_defaults(func=cmd_list_unmanaged)
+
+    p = sub.add_parser("list-archived")
+    p.set_defaults(func=cmd_list_archived)
+
+    p = sub.add_parser("prune")
+    p.add_argument("--days", type=float, default=None)
+    p.add_argument("--apply", action="store_true")
+    p.set_defaults(func=cmd_prune)
+
+    p = sub.add_parser("purge")
+    p.add_argument("--days", type=float, default=None)
+    p.add_argument("--apply", action="store_true")
+    p.set_defaults(func=cmd_purge)
 
     p = sub.add_parser("curator")
     p.add_argument("--apply", action="store_true")
@@ -1090,13 +1476,18 @@ def main(argv):
     p.add_argument("--archive-days", type=float, default=30)
     p.add_argument("--include-manual", action="store_true")
     p.add_argument("--request-consolidation", action="store_true")
+    p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_curator)
 
     p = sub.add_parser("consolidate", help="print the curator consolidation prompt")
+    p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_consolidate)
 
     p = sub.add_parser("adopt")
-    p.add_argument("name")
+    p.add_argument("name", nargs="?")
+    p.add_argument("--all-unmanaged", action="store_true")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--yes", action="store_true")
     p.set_defaults(func=cmd_adopt)
 
     p = sub.add_parser("pin")
@@ -1119,15 +1510,21 @@ def main(argv):
 
     p = sub.add_parser("ledger")
     p.add_argument("--limit", type=int, default=20)
+    p.add_argument("--skill", default=None)
+    p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_ledger)
 
     p = sub.add_parser("backup")
     p.add_argument("--keep", type=int, default=2)
+    p.add_argument("--reason", default=None)
+    p.add_argument("--list", action="store_true")
     p.set_defaults(func=cmd_backup)
 
     p = sub.add_parser("rollback")
-    p.add_argument("entry")
-    p.set_defaults(func=lambda a: rollback_entry(a.entry))
+    p.add_argument("entry", nargs="?")
+    p.add_argument("--list", action="store_true")
+    p.add_argument("--snapshot", default=None)
+    p.set_defaults(func=cmd_rollback)
 
     p = sub.add_parser("review", help="print the reviewer prompt for one session")
     p.add_argument("--session")

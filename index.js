@@ -721,7 +721,7 @@ export function apply(ctx, config = {}) {
   // Optional Hermes-style consolidation pass: deterministic curator first, then
   // one restricted child that merges overlapping skills into umbrellas. Off by
   // default; every archive must declare absorbed_into (enforced by skillctl).
-  async function runConsolidation(startedAt, autoSummary, force = false) {
+  async function runConsolidation(startedAt, autoSummary, force = false, dryRun = false) {
     if ((!cfg.consolidateEnabled && !force) || disposed) return
     const agent = mostRecentRootAgent()
     if (!agent) {
@@ -731,7 +731,9 @@ export function apply(ctx, config = {}) {
 
     // Best-effort whole-tree snapshot before the only pass that rewrites content.
     let backup = null
-    try {
+    if (dryRun) {
+      log({ event: 'consolidate.dry-run', phase: 'snapshot-skipped' })
+    } else try {
       const result = await runProcess(
         cfg.python,
         [cfg.skillctl, 'backup', '--keep', String(cfg.consolidateBackupKeep)],
@@ -747,7 +749,7 @@ export function apply(ctx, config = {}) {
     const before = await listLibrary()
     const promptResult = await runProcess(
       cfg.python,
-      [cfg.skillctl, 'consolidate'],
+      [cfg.skillctl, 'consolidate', ...(dryRun ? ['--dry-run'] : [])],
       { env: reviewEnv(), timeoutMs: 60000 },
     )
     if (promptResult.code !== 0) {
@@ -764,9 +766,20 @@ export function apply(ctx, config = {}) {
       event: 'consolidate.start',
       candidates: before.length,
       backup,
+      dryRun,
       routeSource: planning.routeSource,
       route: planning.route,
     })
+    const dryRunMarker = path.join(cfg.stateDir, 'dry-run')
+    if (dryRun) {
+      try {
+        fs.mkdirSync(cfg.stateDir, { recursive: true })
+        fs.writeFileSync(dryRunMarker, `${JSON.stringify({ startedAt: isoNow(), dryRun: true })}\n`, 'utf8')
+      } catch (error) {
+        log({ event: 'consolidate.dry-run-failed', error: errorText(error) })
+        throw error
+      }
+    }
     const controller = new AbortController()
     activeController = controller
     activeCuratorController = controller
@@ -811,6 +824,13 @@ export function apply(ctx, config = {}) {
     } finally {
       activeCuratorController = null
       activeController = null
+      if (dryRun) {
+        try {
+          fs.unlinkSync(dryRunMarker)
+        } catch {
+          /* already removed */
+        }
+      }
     }
 
     const output = textOfBlocks(result?.output)
@@ -824,6 +844,7 @@ export function apply(ctx, config = {}) {
       ledgerEntries: readLedgerSince(startedAt),
       output,
       autoSummary,
+      dryRun,
       error: stopReason === 'completed' ? null : `child stopped with ${stopReason}`,
     })
     let reportPath = null
@@ -841,6 +862,7 @@ export function apply(ctx, config = {}) {
     log({
       event: 'consolidate.finished',
       stopReason,
+      dryRun,
       candidates: before.length,
       after: report.afterTotal,
       consolidated: report.counts.consolidated,
@@ -855,14 +877,21 @@ export function apply(ctx, config = {}) {
     if (disposed || curatorRunning || reviewing) return
     const marker = path.join(cfg.stateDir, 'consolidate.request')
     if (!fs.existsSync(marker)) return
+    let dryRun = false
+    try {
+      const request = JSON.parse(fs.readFileSync(marker, 'utf8'))
+      dryRun = request?.dry_run === true
+    } catch {
+      /* malformed marker: run a normal pass */
+    }
     try {
       fs.unlinkSync(marker)
     } catch {
       /* another path already consumed it */
     }
     curatorRunning = true
-    log({ event: 'consolidate.requested' })
-    runConsolidation(Date.now(), '', true)
+    log({ event: 'consolidate.requested', dryRun })
+    runConsolidation(Date.now(), '', true, dryRun)
       .catch((error) => log({ event: 'consolidate.failed', error: errorText(error) }))
       .finally(() => {
         curatorRunning = false
@@ -876,8 +905,17 @@ export function apply(ctx, config = {}) {
       })
   }
 
+  function curatorPaused() {
+    try {
+      return fs.existsSync(path.join(cfg.stateDir, 'paused'))
+    } catch {
+      return false
+    }
+  }
+
   function maybeRunCurator() {
     if (!cfg.curatorEnabled || curatorRunning || disposed || reviewing) return
+    if (curatorPaused()) return
     const now = Date.now()
     if (now - (Number(state.lastCuratorAt) || 0) < cfg.curatorEveryDays * DAY_MS) return
     curatorRunning = true

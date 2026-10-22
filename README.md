@@ -201,6 +201,39 @@ curator-managed library and builds umbrellas.
   it at the next completed turn and runs one pass even when `consolidateEnabled` is false.
 - Unlike Hermes, DSH has no cron-job skill references, so there is no cron rewrite step.
 
+### Read-before-write and loaded context
+
+- Before patching SKILL.md the reviewer must call `skill_read` and pass the returned
+  SHA to `patch`; a stale SHA is rejected.
+- `skill_read NAME --path=references/...` reads one support file and returns its SHA.
+  Overwriting an existing support file without that SHA is refused, so the reviewer
+  cannot silently replace work it never read.
+- `skillctl review --session <id>` also extracts the skills the primary agent actually
+  loaded in that session (`skill` tool calls or `<skill_content name=...>` events) and
+  puts them in the prompt: the reviewer must treat their conventions as binding.
+
+### Snapshots and recovery
+
+- `skillctl backup` writes `<skillsRoot>/.curator_backups/<timestamp>/skills.tar.gz`
+  plus a `manifest.json` (reason, skill list); `--reason` labels it, `--list` shows all.
+- `skillctl rollback --snapshot <id|latest>` restores the active skill tree from a
+  snapshot and takes a `pre-rollback` safety snapshot first.
+- `skillctl rollback <ledger-entry>` still restores one mutation; `--list` lists
+  snapshots.
+
+### Status, pause and dry runs
+
+- `skillctl status [--json]` reports library counts, origins, archived count, snapshots,
+  ledger size, last curator/consolidation times and pause/dry-run state.
+- `skillctl pause` / `skillctl resume` write/remove a pause marker; the host skips
+  automatic curator runs while paused (manual consolidation requests still run).
+- `skillctl curator --dry-run` previews deterministic transitions;
+  `skillctl curator --request-consolidation --dry-run` asks the host for a
+  consolidation pass in which every write is refused and the report is marked dry-run.
+- `skillctl prune --days N [--apply]` bulk-archives idle curator-managed skills;
+  `skillctl purge --days N [--apply]` deletes archived skills past a TTL.
+  Both are previews unless `--apply` is passed.
+
 ### User-owned skills
 
 Skills with `created_by: manual`, `learn` or `installed` are user-owned. The background
