@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.2 — 2026-10-22 (unreleased)
+## 0.3.2 — 2026-10-22
 
 - Prevent the background reviewer from duplicating user-owned skills: the review
   prompt tags every skill with its origin, marks manual/learn/installed skills
