@@ -256,4 +256,4 @@ npm test
 
 ## License
 
-MIT © 2026 Xinyang Li
+MIT © 2026 dsh-skill-curator contributors

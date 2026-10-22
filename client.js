@@ -1,8 +1,8 @@
 // Browser half of the Skill Curator: a first-class main panel opened from the
-// left sidebar. The page answers three questions in reading order —
-// what happened last, what skills exist, what each review changed — and hides
-// protocol details behind one "Technical details" disclosure. Data comes from
-// the Host routes registered by this same bundle's host half.
+// left sidebar. The page answers three questions in reading order — what
+// happened last, what skills exist, what each review changed — and offers four
+// editable controls. Data comes from the Host routes registered by this same
+// bundle's host half.
 window.__ModuleLoader__.load({
   id: 'dsh-skill-curator',
   factory(require) {
@@ -62,7 +62,6 @@ window.__ModuleLoader__.load({
       cfgSaveError: 'Save failed:',
       cfgOn: 'On',
       cfgOff: 'Off',
-      sectionAdvanced: 'Technical details',
       filterAll: 'All',
       filterActive: 'Active',
       filterIdle: 'Idle',
@@ -86,13 +85,6 @@ window.__ModuleLoader__.load({
       skillClose: 'Close',
       skillError: 'Could not read this skill.',
       skillFilesNone: 'none',
-      advLedger: 'Recent writes',
-      opCreate: 'new',
-      opPatch: 'edit',
-      opWriteFile: 'file',
-      opArchive: 'archive',
-      opOther: 'change',
-      ledgerEmpty: 'No writes yet.',
     }
 
     const ZH = {
@@ -144,7 +136,6 @@ window.__ModuleLoader__.load({
       cfgSaveError: '保存失败：',
       cfgOn: '开启',
       cfgOff: '关闭',
-      sectionAdvanced: '技术细节',
       filterAll: '全部',
       filterActive: '活跃',
       filterIdle: '闲置',
@@ -168,13 +159,6 @@ window.__ModuleLoader__.load({
       skillClose: '关闭',
       skillError: '读取该技能失败。',
       skillFilesNone: '无',
-      advLedger: '最近写入',
-      opCreate: '新建',
-      opPatch: '修改',
-      opWriteFile: '文件',
-      opArchive: '归档',
-      opOther: '变更',
-      ledgerEmpty: '还没有写入。',
     }
 
     const CSS = `
@@ -294,17 +278,6 @@ window.__ModuleLoader__.load({
 .sc-config-actions{display:flex;align-items:center;gap:12px;margin-top:16px;padding-top:14px;border-top:1px solid var(--dsw-alias-border-l1)}
 .sc-status-ok{font-size:12px;color:var(--dsw-alias-state-success-primary)}
 .sc-status-error{font-size:12px;color:var(--dsw-alias-state-error-primary)}
-.sc-advanced{border-top:1px solid var(--dsw-alias-border-l1);padding-top:14px}
-.sc-advanced summary{cursor:pointer;font-size:12px;color:var(--dsw-alias-label-secondary);list-style:none}
-.sc-advanced summary::-webkit-details-marker{display:none}
-.sc-advanced summary::before{content:'▸ ';display:inline-block;transition:transform .12s}
-.sc-advanced[open] summary::before{content:'▾ '}
-.sc-adv-grid{display:grid;grid-template-columns:150px minmax(0,1fr);gap:6px 14px;font-size:12px;padding:14px 0 6px;margin:0}
-.sc-adv-grid dt{color:var(--dsw-alias-label-secondary)}
-.sc-adv-grid dd{margin:0;word-break:break-all}
-.sc-adv-ledger{margin-top:12px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;overflow:hidden}
-.sc-adv-row{display:grid;grid-template-columns:64px minmax(0,1fr) auto;gap:12px;padding:8px 12px;border-top:1px solid var(--dsw-alias-border-l1);font-size:12px;align-items:center}
-.sc-adv-row:first-child{border-top:none}
 .sc-mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
 .sc-footer{font-size:11px;color:var(--dsw-alias-label-secondary);text-align:center;padding-top:6px}
 .sc-modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:48px;z-index:1200}
@@ -682,22 +655,6 @@ window.__ModuleLoader__.load({
           status ? h('span', { className: failed ? 'sc-status-error' : 'sc-status-ok' }, status) : null))
     }
 
-    function Advanced(props) {
-      const { data, t } = props
-      const ledger = data.ledger || []
-      const opLabel = (op) => (op === 'create' ? t('opCreate') : op === 'patch' ? t('opPatch') : op === 'write_file' ? t('opWriteFile') : op === 'archive' ? t('opArchive') : t('opOther'))
-      return h('details', { className: 'sc-advanced' },
-        h('summary', null, t('sectionAdvanced')),
-        h('div', { style: { marginTop: 14 } },
-          h('div', { className: 'sc-section-hint', style: { marginBottom: 6 } }, t('advLedger')),
-          ledger.length === 0
-            ? h('div', { className: 'sc-empty', style: { padding: '12px 0' } }, t('ledgerEmpty'))
-            : h('div', { className: 'sc-adv-ledger' }, ledger.slice(0, 10).map((row) => h('div', { className: 'sc-adv-row', key: row.id },
-                h('span', { className: 'sc-pill sc-pill-archived' }, opLabel(row.op)),
-                h('span', { className: 'sc-mono' }, row.name || '?'),
-                h('span', { className: 'sc-section-hint' }, fmtTime(row.ts) || ''))))))
-    }
-
     function SkillModal(props) {
       const { skill, detail, loading, error, onClose, t } = props
       const dialogRef = useRef(null)
@@ -1016,7 +973,6 @@ window.__ModuleLoader__.load({
         h('div', { className: 'sc-card' }, h(Cadence, { activity: (data && data.activity) || [], t })))
 
       const configSection = data ? h(Section, { title: t('sectionConfig') }, h(Configuration, { data, t })) : null
-      const advanced = data ? h(Advanced, { data, t }) : null
 
       return h(React.Fragment, null,
         h('style', { key: 'sc-style' }, CSS),
@@ -1027,7 +983,7 @@ window.__ModuleLoader__.load({
               h('span', null, `${t('error')} ${error}`),
               h('button', { className: 'sc-btn', onClick: reload }, t('retry'))) : null,
             loading && !data ? h('div', { className: 'sc-skeleton' }, t('loading')) : null,
-            data ? h(React.Fragment, null, hero, kpis, skillsSection, learningSection, activitySection, configSection, advanced) : null)),
+            data ? h(React.Fragment, null, hero, kpis, skillsSection, learningSection, activitySection, configSection) : null)),
         selected ? h(SkillModal, {
           skill: skills.find((skill) => skill.name === selected) || { name: selected, description: '' },
           detail,

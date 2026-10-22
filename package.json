@@ -1,10 +1,10 @@
 {
   "name": "dsh-skill-curator",
-  "version": "0.4.1",
+  "version": "0.3.0",
   "description": "Hermes-style in-process background skill review and lifecycle curation for DeepSeek Harness, with a read-only dashboard.",
   "type": "module",
   "license": "MIT",
-  "author": "Xinyang Li",
+  "author": "dsh-skill-curator contributors",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/xinyanglii/dsh-skill-curator.git"
